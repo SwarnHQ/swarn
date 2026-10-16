@@ -34,8 +34,8 @@ second gpui. Re-run the audit when it lands, because it also pulls in `gpui-fast
 
 ## Fonts
 
-Manrope and Roboto Mono are SIL OFL 1.1. See `crates/swarn-desktop/assets/fonts/README.md`. The OFL
-text itself still has to be added there before the first release.
+Manrope and Roboto Mono are SIL OFL 1.1. Their license texts sit next to the font files in
+`crates/swarn-desktop/assets/fonts/`.
 
 ## Re-running it
 

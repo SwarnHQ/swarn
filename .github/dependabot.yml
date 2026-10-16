@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # gpui-pre is pinned on purpose; move it by hand together with gpui-component.
+    ignore:
+      - dependency-name: "gpui-pre*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

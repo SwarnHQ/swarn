@@ -6,6 +6,7 @@ members = ["crates/*"]
 edition = "2024"
 license = "Apache-2.0"
 publish = false
+repository = "https://github.com/swarnhq/swarn"
 
 [workspace.dependencies]
 # Published snapshot of Zed's gpui (zed@93d7456). gpui-component 0.7 builds on the
