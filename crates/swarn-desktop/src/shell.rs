@@ -19,6 +19,8 @@ use gpui_component::input::TextareaState;
 use crate::compose::{AGENTS, NewWorkspace, composer_state};
 use crate::model::Board;
 use crate::review::{DiffState, Tab};
+use crate::service::{self, Service};
+use crate::setup::Setup;
 use crate::theme::{HAIRLINE, MONO, SANS, TITLE_BAR_HEIGHT, Theme, label};
 
 /// Plexo's 20px side gutter, used by every row and strip.
@@ -45,6 +47,11 @@ pub struct Shell {
     pub(crate) pr_busy: bool,
     /// A one-off message for the footer, such as the URL of a new pull request.
     pub(crate) notice: Option<String>,
+    pub(crate) setup: Option<Setup>,
+    /// The first-run checklist opens by itself once, on a daemon with no repositories yet.
+    pub(crate) setup_seen: bool,
+    /// Whether the background helper is registered; checked while the daemon is unreachable.
+    pub(crate) service: Service,
 }
 
 impl Shell {
@@ -119,6 +126,9 @@ impl Shell {
             viewed: HashSet::new(),
             pr_busy: false,
             notice: None,
+            setup: None,
+            setup_seen: false,
+            service: Service::NotBundled,
         }
     }
 
@@ -133,6 +143,17 @@ impl Shell {
 
     fn set_lists(&mut self, lists: Option<Lists>, cx: &mut Context<Self>) {
         self.online = Some(lists.is_some());
+        if lists.is_none() {
+            self.service = service::status();
+        }
+        if let Some(lists) = &lists
+            && lists.repos.is_empty()
+            && !self.setup_seen
+            && self.setup.is_none()
+        {
+            self.setup_seen = true;
+            self.open_setup(cx);
+        }
         if let Some(lists) = lists {
             self.board.info = Some(lists.info);
             self.board.repos = lists.repos;
@@ -254,12 +275,8 @@ impl Render for Shell {
 
         let main = match (self.online, &workspace, &session) {
             (None, _, _) => div().flex_1().into_any_element(),
-            (Some(false), _, _) => empty_state(
-                &theme,
-                "Daemon not running",
-                "Start it, and this window connects on its own:",
-                Some("cargo run -p swarn-daemon"),
-            ),
+            (Some(false), _, _) => self.offline_view(&theme, cx),
+            (Some(true), _, _) if self.setup.is_some() => self.setup_view(&theme, cx),
             _ if self.form.is_some() => self.new_workspace_form(&theme, cx),
             (Some(true), None, _) if self.board.repos.is_empty() => empty_state(
                 &theme,
@@ -443,6 +460,10 @@ impl Shell {
                 .child(
                     sidebar_action(theme, "add-repo", "Add repository…")
                         .on_click(cx.listener(|this, _, _, cx| this.add_repository(cx))),
+                )
+                .child(
+                    sidebar_action(theme, "open-setup", "Setup & checks")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_setup(cx))),
                 ),
         )
     }

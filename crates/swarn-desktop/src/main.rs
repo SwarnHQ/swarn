@@ -3,6 +3,8 @@ mod diff;
 mod markdown;
 mod model;
 mod review;
+mod service;
+mod setup;
 mod shell;
 mod theme;
 mod transcript;
