@@ -96,7 +96,7 @@ pub struct WorkspaceArchive {
 pub struct SessionStart {
     pub workspace_id: String,
     pub prompt: String,
-    /// Only `claude-code` until the Codex driver lands in week 4.
+    /// `claude-code` or `codex`.
     #[serde(default = "default_agent")]
     pub agent: String,
     /// Passed to the agent as-is, e.g. `haiku`. The agent's own default when absent.

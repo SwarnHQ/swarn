@@ -7,9 +7,11 @@
 
 mod api;
 mod claude;
+mod codex;
 mod db;
 mod env;
 mod events;
+mod sessions;
 mod workspace;
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -108,10 +110,16 @@ fn print_event(event: &Event, mid_line: &mut bool) {
             format!("[{tag}] approval {}{reason}", text(&p["decision"]))
         }
         EventKind::StatusChanged => format!("[{tag}] status: {}", text(&p["status"])),
-        EventKind::Usage => format!(
-            "[{tag}] usage: {} in, {} out, ${}",
-            p["input_tokens"], p["output_tokens"], p["cost_usd"]
-        ),
+        EventKind::Usage => {
+            let cost = p["cost_usd"]
+                .as_f64()
+                .map(|c| format!(", ${c:.4}"))
+                .unwrap_or_default();
+            format!(
+                "[{tag}] usage: {} in, {} out{cost}",
+                p["input_tokens"], p["output_tokens"]
+            )
+        }
         EventKind::Error => format!("[{tag}] error: {}", text(&p["message"])),
         EventKind::SessionEnded => format!("[{tag}] session ended ({})", p["exit_code"]),
         EventKind::AgentMessageEnd
@@ -170,7 +178,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let info = api::machine_info(&db).await?;
     let agent_env = env::AgentEnv::capture().await;
     let log = events::EventLog::new(db.clone());
-    let sessions = claude::Sessions::new(db.clone(), log.clone(), agent_env);
+    let sessions = sessions::Sessions::new(db.clone(), log.clone(), agent_env);
     let api = api::Api {
         db,
         info,

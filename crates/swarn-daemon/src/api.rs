@@ -18,9 +18,9 @@ use tokio::net::unix::OwnedWriteHalf;
 use tokio::process::Command;
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::claude::Sessions;
 use crate::db::Db;
 use crate::events::EventLog;
+use crate::sessions::{Driver, Sessions};
 use crate::workspace::{self, run_git};
 
 #[derive(Clone)]
@@ -180,12 +180,12 @@ impl Api {
     }
 
     async fn session_start(&self, p: SessionStart) -> Result<Value, Failure> {
-        if p.agent != "claude-code" {
-            return Err(Failed(format!(
-                "agent {:?} is not supported yet; the Codex driver arrives in week 4",
+        let driver = Driver::for_agent(&p.agent).ok_or_else(|| {
+            Failed(format!(
+                "unknown agent {:?}; use \"claude-code\" or \"codex\"",
                 p.agent
-            )));
-        }
+            ))
+        })?;
         let ws = workspace::get(&self.db, &p.workspace_id)
             .await
             .map_err(Failed)?
@@ -197,7 +197,7 @@ impl Api {
             )));
         }
         self.sessions
-            .start(ws.id, ws.worktree_path, p.prompt, p.model)
+            .start(driver, ws.id, ws.worktree_path, p.prompt, p.model)
             .await
             .map(|s| json!(s))
             .map_err(Failed)
