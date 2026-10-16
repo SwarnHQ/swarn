@@ -54,6 +54,9 @@ pub struct Shell {
     pub(crate) setup: Option<Setup>,
     pub(crate) devices: Vec<serde_json::Value>,
     pub(crate) pairing: Option<crate::pairing::Pairing>,
+    /// What each agent can run, from the daemon, and which one the composer has picked.
+    pub(crate) models: HashMap<&'static str, Vec<serde_json::Value>>,
+    pub(crate) model_pick: HashMap<&'static str, usize>,
     /// The first-run checklist opens by itself once, on a daemon with no repositories yet.
     pub(crate) setup_seen: bool,
     /// Whether the background helper is registered; checked while the daemon is unreachable.
@@ -158,6 +161,8 @@ impl Shell {
             setup: None,
             devices: Vec::new(),
             pairing: None,
+            models: HashMap::new(),
+            model_pick: HashMap::new(),
             setup_seen: false,
             service: Service::NotBundled,
         };
@@ -194,6 +199,9 @@ impl Shell {
         {
             self.setup_seen = true;
             self.open_setup(cx);
+        }
+        if lists.is_some() && self.models.is_empty() {
+            self.load_models(cx);
         }
         if lists.is_some() {
             crate::bench::connected();
@@ -580,17 +588,36 @@ fn header(
         .py(px(12.))
         .border_b(px(HAIRLINE))
         .border_color(theme.border)
+        // In a narrow window the branch gives way first, then a long name; the buttons never do.
         .child(
             div()
-                .text_size(px(14.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(ws.name.clone()),
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(240.))
+                        .truncate()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(ws.name.clone()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(chip(theme, ws.branch.clone())),
+                ),
         )
-        .child(chip(theme, ws.branch.clone()))
-        .child(div().flex_1())
-        .child(actions)
+        .child(div().flex_none().child(actions))
         .child(
             div()
+                .flex_none()
                 .flex()
                 .items_center()
                 .gap(px(6.))

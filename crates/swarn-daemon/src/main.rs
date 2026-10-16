@@ -232,6 +232,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         env: agent_env,
         devices,
         mdns_instance: mdns.as_ref().map(|(_, instance)| instance.clone()),
+        codex_models: Default::default(),
     };
 
     tokio::spawn(policy::keep_awake(api.db.clone()));

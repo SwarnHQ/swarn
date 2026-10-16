@@ -56,10 +56,14 @@ impl Shell {
                 "session.prompt",
                 json!({ "session_id": session_id, "text": text }),
             ),
-            None => (
-                "session.start",
-                json!({ "workspace_id": workspace_id, "prompt": text, "agent": self.agent }),
-            ),
+            None => {
+                let mut params =
+                    json!({ "workspace_id": workspace_id, "prompt": text, "agent": self.agent });
+                if let Some(model) = self.chosen_model(self.agent) {
+                    params["model"] = json!(model);
+                }
+                ("session.start", params)
+            }
         };
         self.call::<Value>(method, params, |_, _, _| {}, cx);
     }
@@ -205,6 +209,7 @@ impl Shell {
             actions = actions.child(label(theme, name));
         } else {
             actions = actions.child(self.agent_toggle(theme, cx));
+            actions = actions.child(self.model_chip(theme, cx));
         }
         actions = actions.child(div().flex_1());
         if working {
@@ -247,6 +252,71 @@ impl Shell {
                     .child(actions),
             )
             .into_any_element()
+    }
+
+    /// Asks the daemon once what each agent can run.
+    pub(crate) fn load_models(&mut self, cx: &mut Context<Self>) {
+        for (agent, _) in AGENTS {
+            self.call::<Vec<Value>>(
+                "agent.models",
+                json!({ "agent": agent }),
+                move |this, result, cx| {
+                    if let Ok(models) = result {
+                        this.models.insert(agent, models);
+                        cx.notify();
+                    }
+                },
+                cx,
+            );
+        }
+    }
+
+    /// The model id to pass for `agent`, if one is picked (None means the agent's own default).
+    fn chosen_model(&self, agent: &str) -> Option<String> {
+        let models = self.models.get(agent)?;
+        let pick = self.model_pick.get(agent).copied().unwrap_or(0);
+        models.get(pick)?["id"].as_str().map(str::to_owned)
+    }
+
+    /// Plexo's cyclable chip: click to step through the agent's models.
+    fn model_chip(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let agent = self.agent;
+        let models = self.models.get(agent).cloned().unwrap_or_default();
+        let pick = self
+            .model_pick
+            .get(agent)
+            .copied()
+            .unwrap_or(0)
+            .min(models.len().saturating_sub(1));
+        let name = models
+            .get(pick)
+            .and_then(|m| m["label"].as_str())
+            .unwrap_or("Default")
+            .to_owned();
+        div()
+            .id("model-chip")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(26.))
+            .px(px(8.))
+            .rounded(px(6.))
+            .border(px(HAIRLINE))
+            .border_color(theme.border)
+            .font_family(MONO)
+            .text_size(px(11.))
+            .text_color(theme.text_secondary)
+            .hover(|s| s.bg(theme.border_subtle))
+            .when(models.len() > 1, |d| {
+                d.on_click(cx.listener(move |this, _, _, cx| {
+                    let next = (this.model_pick.get(agent).copied().unwrap_or(0) + 1)
+                        % models.len().max(1);
+                    this.model_pick.insert(agent, next);
+                    cx.notify();
+                }))
+            })
+            .child(div().text_color(theme.text_tertiary).child("MODEL"))
+            .child(name)
     }
 
     /// Plexo's segmented toggle (its MB/s | Mbps switch), here choosing the agent.

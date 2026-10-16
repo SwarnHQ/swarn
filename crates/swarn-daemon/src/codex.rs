@@ -308,6 +308,60 @@ impl Codex {
     }
 }
 
+/// The models `codex app-server` offers, its default first, as `{id, label}`. Passing the default
+/// explicitly sidesteps a `model` in the user's config.toml that their account can't use (seen in
+/// week 4). None if app-server can't be reached within 10 seconds.
+pub async fn list_models(env: &crate::env::AgentEnv) -> Option<Vec<Value>> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let bin = std::env::var_os("SWARN_CODEX_BIN")
+        .map(std::path::PathBuf::from)
+        .or_else(|| env.which("codex"))?;
+    let mut child = tokio::process::Command::new(bin)
+        .arg("app-server")
+        .env_clear()
+        .envs(&env.vars)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let mut lines = BufReader::new(child.stdout.take()?).lines();
+    let ask = async {
+        let client =
+            json!({ "name": "swarn", "title": "Swarn", "version": env!("CARGO_PKG_VERSION") });
+        let init = json!({ "id": 1, "method": "initialize", "params": { "clientInfo": client, "capabilities": null } });
+        stdin.write_all(format!("{init}\n").as_bytes()).await.ok()?;
+        while let Ok(Some(line)) = lines.next_line().await {
+            let msg: Value = serde_json::from_str(&line).ok()?;
+            if msg["id"] == 1 {
+                let list = json!({ "id": 2, "method": "model/list", "params": {} });
+                stdin
+                    .write_all(
+                        format!("{}\n{list}\n", json!({ "method": "initialized" })).as_bytes(),
+                    )
+                    .await
+                    .ok()?;
+            } else if msg["id"] == 2 {
+                let mut models: Vec<Value> = msg["result"]["data"]
+                    .as_array()?
+                    .iter()
+                    .filter(|m| m["hidden"] != true)
+                    .map(|m| json!({ "id": m["id"], "label": m["displayName"], "default": m["isDefault"] }))
+                    .collect();
+                models.sort_by_key(|m| m["default"] != true);
+                return Some(models);
+            }
+        }
+        None
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), ask)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Codex often wraps the provider's JSON error inside its message; show the human part.
 fn clean_error(message: &str) -> String {
     serde_json::from_str::<Value>(message)

@@ -37,6 +37,8 @@ pub struct Api {
     pub env: AgentEnv,
     pub devices: Arc<Devices>,
     pub mdns_instance: Option<String>,
+    /// `codex app-server` takes a second to start, so its model list is asked for once.
+    pub codex_models: Arc<tokio::sync::Mutex<Option<Vec<Value>>>>,
 }
 
 impl Api {
@@ -148,6 +150,10 @@ impl Api {
                     .map_err(Failed),
                 None => Err(Invalid("device_id is required".into())),
             },
+            "agent.models" => match p["agent"].as_str() {
+                Some(agent) => Ok(json!(self.models(agent).await)),
+                None => Err(Invalid("agent is required".into())),
+            },
             "setup.check" => Ok(crate::setup::check(&self.env).await),
             "policy.get" => Ok(json!(crate::policy::load())),
             "policy.set" => match params::<swarn_core::local_api::Policy>(p) {
@@ -177,6 +183,9 @@ impl Api {
                 Err(e) => Err(Invalid(e)),
             },
             "workspace.archive" => match params::<WorkspaceArchive>(p) {
+                Ok(p) if self.agent_running(&p.workspace_id).await => Err(Failed(
+                    "An agent is still running in this workspace. Stop it first.".into(),
+                )),
                 Ok(p) => workspace::archive(&self.db, p.workspace_id, p.force)
                     .await
                     .map(|w| json!(w))
@@ -242,6 +251,42 @@ impl Api {
             .await
             .map(|w| json!(w))
             .map_err(Failed)
+    }
+
+    async fn agent_running(&self, workspace_id: &str) -> bool {
+        let id = workspace_id.to_owned();
+        self.db
+            .call(move |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM session WHERE workspace_id = ?1 AND status IN ('starting', 'working', 'needs_input')",
+                    [id],
+                    |r| r.get::<_, i64>(0),
+                )
+            })
+            .await
+            .is_ok_and(|n| n > 0)
+    }
+
+    /// Models the composer can offer for an agent. The first entry is the one to preselect.
+    async fn models(&self, agent: &str) -> Vec<Value> {
+        match agent {
+            "codex" => {
+                let mut cache = self.codex_models.lock().await;
+                if cache.is_none() {
+                    *cache = crate::codex::list_models(&self.env).await;
+                }
+                cache
+                    .clone()
+                    .unwrap_or_else(|| vec![json!({ "id": null, "label": "Default" })])
+            }
+            _ => ["Default", "Opus", "Sonnet", "Haiku"]
+                .iter()
+                .map(|label| {
+                    let id = (*label != "Default").then(|| label.to_lowercase());
+                    json!({ "id": id, "label": label })
+                })
+                .collect(),
+        }
     }
 
     async fn workspace(&self, id: &str) -> Result<swarn_core::schema::Workspace, Failure> {

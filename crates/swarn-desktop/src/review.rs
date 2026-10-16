@@ -93,6 +93,40 @@ impl Shell {
         );
     }
 
+    /// Archives the selected workspace: removes its worktree, keeps an unmerged branch. With
+    /// uncommitted changes the daemon refuses, and a confirm dialog offers to discard them.
+    pub(crate) fn archive_workspace(
+        &mut self,
+        force: bool,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let window_handle = window.window_handle();
+        self.call::<Value>(
+            "workspace.archive",
+            json!({ "workspace_id": id, "force": force }),
+            move |this, result, cx| match result {
+                Ok(_) => {
+                    this.selected = None;
+                    this.notice = Some("Workspace archived".into());
+                    this.refresh(cx);
+                }
+                Err(e) if e.contains("force") => {
+                    // The footer would show git's message; the dialog says it plainly instead.
+                    this.last_error = None;
+                    let shell = cx.entity().downgrade();
+                    let _ = window_handle
+                        .update(cx, |_, window, cx| confirm_discard(shell, window, cx));
+                }
+                Err(_) => {}
+            },
+            cx,
+        );
+    }
+
     /// Right side of the workspace header: the view switch and Create PR.
     pub(crate) fn header_actions(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let tab = |id: &'static str, text: &'static str, which: Tab| {
@@ -133,6 +167,16 @@ impl Shell {
                     .border_color(theme.border)
                     .child(tab("tab-transcript", "Transcript", Tab::Transcript))
                     .child(tab("tab-diff", "Diff", Tab::Diff)),
+            )
+            .child(
+                button(theme, "archive", "Archive", ButtonKind::Secondary)
+                    .h(px(26.))
+                    .text_size(px(12.5))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.archive_workspace(false, window, cx)
+                        }),
+                    ),
             )
             .child(
                 button(
@@ -299,4 +343,34 @@ fn diff_row(
             .child(line(" ", text))
             .into_any_element(),
     }
+}
+
+fn confirm_discard(shell: gpui::WeakEntity<Shell>, window: &mut gpui::Window, cx: &mut gpui::App) {
+    use gpui_component::WindowExt as _;
+    let theme = *Theme::get(cx);
+    window.open_dialog(cx, move |dialog, _, _| {
+        let shell_ok = shell.clone();
+        dialog.w(px(420.)).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("Discard uncommitted changes?"))
+                .child(div().text_size(px(13.)).text_color(theme.text_secondary).child(
+                    "This worktree has changes that aren't committed. Archiving removes the worktree and they're gone. Commit them or open a pull request first to keep them.",
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.))
+                        .mt(px(6.))
+                        .child(button(&theme, "discard-cancel", "Keep it", ButtonKind::Secondary).on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(button(&theme, "discard-ok", "Discard and archive", ButtonKind::Destructive).on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let _ = shell_ok.update(cx, |this, cx| this.archive_workspace(true, window, cx));
+                        })),
+                ),
+        )
+    });
 }
