@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds Swarn.app with the daemon inside it, ready for SMAppService to register (PRD §5.5).
-# Usage: scripts/bundle.sh [profile]   (default: release). Signs ad hoc; Developer ID comes in week 8.
+# Usage: scripts/bundle.sh [profile]   (default: release). Set SWARN_SIGN_ID to sign for distribution.
 set -eu
 PROFILE="${1:-release}"
 DIR="target/$PROFILE"
@@ -47,5 +47,13 @@ cat > "$APP/Contents/Library/LaunchAgents/dev.swarn.daemon.plist" <<PLIST
 </dict></plist>
 PLIST
 
-codesign --force --deep --sign - "$APP"
+# Ad hoc unless SWARN_SIGN_ID names a Developer ID Application identity in the keychain. A real
+# identity also gets the hardened runtime and a secure timestamp, which notarization requires.
+# The daemon is signed first because --deep is deprecated and doesn't apply those options inside.
+if [ -n "${SWARN_SIGN_ID:-}" ]; then
+  codesign --force --options runtime --timestamp --sign "$SWARN_SIGN_ID" "$APP/Contents/MacOS/swarnd"
+  codesign --force --options runtime --timestamp --sign "$SWARN_SIGN_ID" "$APP"
+else
+  codesign --force --deep --sign - "$APP"
+fi
 echo "$APP"

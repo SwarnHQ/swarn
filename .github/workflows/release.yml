@@ -1,0 +1,70 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds the DMG and attaches it to a draft release. A person
+# publishes the draft. Without the signing secrets the DMG is unsigned, which is fine for
+# testing but makes Gatekeeper refuse it on other Macs.
+#
+# Secrets for a signed, notarized build:
+#   MACOS_CERT_P12, MACOS_CERT_PASSWORD   Developer ID Application certificate, base64 .p12
+#   MACOS_SIGN_ID                         its name, "Developer ID Application: ... (TEAMID)"
+#   NOTARY_KEY_P8, NOTARY_KEY_ID, NOTARY_ISSUER   an App Store Connect API key, base64 .p8
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-latest
+    env:
+      SIGNED: ${{ secrets.MACOS_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Check the tag matches the version
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/swarn-desktop/Cargo.toml | head -1)
+          [ "$GITHUB_REF_NAME" = "v$VERSION" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml says $VERSION"; exit 1; }
+
+      - name: Import the signing certificate
+        if: env.SIGNED == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          PASS=$(openssl rand -hex 16)
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials swarn --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --keychain "$KEYCHAIN"
+          rm "$RUNNER_TEMP/notary.p8"
+
+      - name: Build the DMG
+        env:
+          SWARN_SIGN_ID: ${{ env.SIGNED == 'true' && secrets.MACOS_SIGN_ID || '' }}
+          SWARN_NOTARY_PROFILE: ${{ env.SIGNED == 'true' && 'swarn' || '' }}
+        run: |
+          DMG=$(scripts/dmg.sh | tail -1)
+          mkdir dist
+          cp "$DMG" dist/Swarn-macos-arm64.dmg
+          (cd dist && shasum -a 256 Swarn-macos-arm64.dmg > Swarn-macos-arm64.dmg.sha256)
+
+      - name: Attach to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --generate-notes --title "Swarn ${GITHUB_REF_NAME#v}"

@@ -6,10 +6,29 @@ Swarn starts Claude Code and Codex sessions in their own git worktrees, shows wh
 and sends an end-to-end encrypted push to your iPhone when one of them needs you. You approve, deny
 or reply from the notification, read the diff on the desktop, and open the pull request with `gh`.
 
-> **Status: pre-alpha.** This is week 4 of an eight-week build toward v0.1. The desktop app runs
-> Claude Code and Codex in git worktrees, shows their transcripts and diffs, asks before they write
-> or run anything, notifies you when one needs you, and opens pull requests with `gh`. The iPhone
-> app comes next. Nothing here is ready for daily use yet.
+> **Status: pre-alpha.** The desktop side of v0.1 is in place. The app runs Claude Code and Codex
+> in git worktrees, shows their transcripts and diffs, and asks before they write or run anything.
+> It notifies you when an agent needs you and opens pull requests with `gh`. It also pairs with a
+> phone over an end-to-end encrypted channel. The iPhone app and the push gateway aren't built
+> yet, and there's no signed release. Expect rough edges.
+
+## Installing
+
+There's no signed release yet. Once one is published, this installs it into `/Applications`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SwarnHQ/swarn/main/scripts/install.sh | sh
+```
+
+Until then, build the disk image yourself. It's unsigned, so it opens on the Mac that built it:
+
+```bash
+scripts/dmg.sh
+```
+
+Open `target/release/Swarn-<version>.dmg` and drag Swarn to Applications. On first launch, Swarn
+asks to run its daemon in the background. It shows up in System Settings under Login Items, where
+you can turn it off again.
 
 ## How it fits together
 
@@ -80,17 +99,27 @@ on both processes to point them somewhere else, which is handy for experiments.
 
 ```
 crates/
-  swarn-core/      shared types and session schema, no I/O
-  swarn-daemon/    the swarnd binary: SQLite, local JSON-RPC API
+  swarn-core/      shared types, session schema and the crypto envelope
+  swarn-daemon/    the swarnd binary: agents, worktrees, SQLite, local API, device listener
   swarn-desktop/   the GPUI app, binary `swarn`
-docs/              design documents and the license audit
-scripts/           maintenance scripts
+  swarn-bench/     benchmark harness, a fake agent and a fake phone
+docs/              design documents, threat model, license audit
+scripts/           bundling, disk image, install and license audit
 ```
+
+## Releasing
+
+Bump the version in `crates/swarn-desktop/Cargo.toml`, then push a matching tag such as `v0.1.0`.
+The release workflow builds the disk image and attaches it to a draft release for someone to
+publish. It signs and notarizes the build when the Developer ID secrets listed in
+[.github/workflows/release.yml](.github/workflows/release.yml) are set. Without them the build is
+unsigned.
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Please report security issues privately as described in
-[SECURITY.md](SECURITY.md), not in public issues.
+[SECURITY.md](SECURITY.md), not in public issues. [docs/threat-model.md](docs/threat-model.md) says what
+Swarn defends against.
 
 ## License
 
