@@ -46,7 +46,7 @@ impl Db {
     }
 }
 
-fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
+pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version < 1 {
         let tx = conn.transaction()?;

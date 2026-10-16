@@ -14,6 +14,7 @@ mod discovery;
 mod env;
 mod events;
 mod identity;
+mod janitor;
 mod policy;
 mod review;
 mod sessions;
@@ -178,6 +179,12 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
             "UPDATE session SET status = 'exited', ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE status IN ('starting', 'working', 'needs_input', 'done')",
             [],
+        )?;
+        // Their open approvals can never be answered now.
+        conn.execute(
+            "UPDATE approval SET resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), decision = 'deny', device_id = 'local'
+             WHERE resolved_at IS NULL",
+            [],
         )
     })
     .await?;
@@ -228,6 +235,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     tokio::spawn(policy::keep_awake(api.db.clone()));
+    tokio::spawn(janitor::run(api.db.clone()));
 
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
