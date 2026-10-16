@@ -33,10 +33,10 @@ CREATE TABLE session (
   id            TEXT PRIMARY KEY,
   workspace_id  TEXT NOT NULL REFERENCES workspace(id),
   agent         TEXT NOT NULL,     -- claude-code|codex|custom
-  tier          TEXT NOT NULL,     -- acp|pty
+  tier          TEXT NOT NULL,     -- native|acp|pty (acp and pty from v0.2)
   status        TEXT NOT NULL,     -- starting|working|needs_input|done|failed|exited
   pid           INTEGER,
-  acp_session   TEXT,              -- agent-side session id for resume
+  acp_session   TEXT,              -- agent-side session or thread id for resume
   started_at    TEXT NOT NULL,
   ended_at      TEXT,
   last_change_at TEXT NOT NULL

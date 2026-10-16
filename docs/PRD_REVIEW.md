@@ -1,10 +1,10 @@
 # Technical PRD review: open questions
 
-Review of `TECHNICAL_PRD.md` (15 Oct 2026), written 16 Oct 2026. Nothing here is resolved yet. Items 1 to 6 change the schema or key storage, so settle them before the first commit. The rest can become tickets.
+Review of `TECHNICAL_PRD.md` (15 Oct 2026), written 16 Oct 2026. The PRD revision of 16 Oct, after the competitor research, settled items 1, 10, 12, 13 and 19; they are marked below. Everything else is still open. Items 1 to 6 change the schema or key storage, so settle them before the first commit. The rest can become tickets.
 
 ## Breaks the core scenario
 
-- [ ] **1. Mac sleep.** An idle Mac sleeps, which suspends the daemon and its agents, so no push goes out while the user is away. Should the daemon hold an `IOPMAssertion` (PreventUserIdleSystemSleep) while any session is `working` or `needs_input`? What about lid-closed laptops on battery?
+- [x] **1. Mac sleep.** *Settled: PRD §5.5 step 9 holds an IOKit power assertion while any session is working or waiting.* An idle Mac sleeps, which suspends the daemon and its agents, so no push goes out while the user is away. Should the daemon hold an `IOPMAssertion` (PreventUserIdleSystemSleep) while any session is `working` or `needs_input`? What about lid-closed laptops on battery?
 - [ ] **2. Daemon key on a locked Mac (§2.2).** `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` makes the key unavailable while the Mac is locked, which is the normal state when the user is away. These accessibility classes also only apply to the data-protection keychain, and that keychain needs an entitlement from a signed bundle, which a bare launchd binary doesn't have. Login keychain, or `AfterFirstUnlock`? Check in week 1.
 - [ ] **3. Approve handling on iOS (§6.2 step 5).** The NSE runs once, before the notification is displayed. It doesn't receive action taps; the app does, launched in the background through `UNUserNotificationCenterDelegate`. The Approve action also needs `.authenticationRequired`, or the WhenUnlocked Enclave key fails on the lock screen. Rewrite the flow.
 - [ ] **4. APNs 4 KB payload limit (§2.3).** After base64, only the 512 and 2048 padding buckets fit. Push payloads should drop `detail` and cap at 2048. State this in the envelope section.
@@ -19,10 +19,10 @@ Review of `TECHNICAL_PRD.md` (15 Oct 2026), written 16 Oct 2026. Nothing here is
 
 ## Spec inconsistencies
 
-- [ ] **10.** The ACP mapping table (§4.2) has no row for `permission_resolved`, so nothing returns a session to `working`.
+- [x] **10.** *Settled: the new mapping table in PRD §4.2 maps `permission_resolved` to `working`. Item 11 still decides what happens with several pending requests.* Originally: the ACP mapping table (§4.2) had no row for `permission_resolved`, so nothing returns a session to `working`.
 - [ ] **11.** With parallel tool calls there can be several pending requests. `next_status(current, ev)` can't tell when the last one resolves. Does it need a pending count?
-- [ ] **12.** The ACP stop reasons `max_tokens`, `max_turn_requests` and `refusal` have no mapping.
-- [ ] **13.** `allow_session` is not an ACP permission kind. ACP agents send their own `options` with an `optionId` and a kind (`allow_once`, `allow_always`, `reject_once`, `reject_always`). Should the approval carry the agent's `optionId`?
+- [x] **12.** *Superseded: v0.1 no longer uses ACP (PRD §4.2). The same question now applies to Claude `result` subtypes and Codex turn statuses, and the contract transcripts (§9.2) pin it.* Originally: the ACP stop reasons `max_tokens`, `max_turn_requests` and `refusal` have no mapping.
+- [x] **13.** *Superseded: Codex app-server has `acceptForSession`, which `allow_session` maps to; for Claude Code it becomes a session-scoped allow rule in the `control_response`.* Originally: `allow_session` is not an ACP permission kind. ACP agents send their own `options` with an `optionId` and a kind (`allow_once`, `allow_always`, `reject_once`, `reject_always`). Should the approval carry the agent's `optionId`?
 - [ ] **14.** The SQL `session.status` includes `starting`, and the UDL `SessionStatus` enum doesn't. §4.2 mentions a PTY status `running` that appears in neither.
 - [ ] **15.** Device envelopes are signed with the Enclave key, so the phone must be unlocked to send even `hello`, `subscribe` or `ack`. Should envelopes use a software key, with the Enclave key kept for approvals only?
 - [ ] **16.** `event_writer` batches every 50 ms. Should `permission_request` flush immediately?
@@ -31,7 +31,7 @@ Review of `TECHNICAL_PRD.md` (15 Oct 2026), written 16 Oct 2026. Nothing here is
 
 - [ ] **17. mDNS on iOS.** `mdns-sd` sends raw multicast, which requires the `com.apple.developer.networking.multicast` entitlement. Apple grants it by manual request, and approval takes a while. Should discovery move to `NWBrowser` in Swift (only `NSBonjourServices` needed) and leave the Rust core?
 - [ ] **18. License allowlist (§1.5, §8.1).** The release bar says every dependency is on the allowlist, but tokio, serde, ciborium, tungstenite and ulid aren't listed, and `gpui` pulls in Zed's `sum_tree`, `util` and `collections` transitively. Replace the hand-written table with `cargo-deny` and a license allowlist over the full graph?
-- [ ] **19. Node runtime.** The Claude Code and Codex ACP adapters are Node packages. How does the notarized DMG install them: bundle Node, or require it?
+- [x] **19. Node runtime.** *Settled: the drivers talk to `claude` and `codex app-server` directly, so v0.1 has no Node dependency (PRD §4.2).* The Claude Code and Codex ACP adapters are Node packages. How does the notarized DMG install them: bundle Node, or require it?
 
 ## Schedule
 
