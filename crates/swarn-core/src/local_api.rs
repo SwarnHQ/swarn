@@ -74,6 +74,72 @@ pub struct RepoAdd {
     pub path: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WorkspaceCreate {
+    pub repo_id: String,
+    /// Lowercase letters, digits and dashes. Becomes the branch `swarn/<name>` and the folder name.
+    pub name: String,
+    /// Defaults to the repo's default branch.
+    #[serde(default)]
+    pub base_ref: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WorkspaceArchive {
+    pub workspace_id: String,
+    /// Remove the worktree even if it has uncommitted changes.
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SessionStart {
+    pub workspace_id: String,
+    pub prompt: String,
+    /// Only `claude-code` until the Codex driver lands in week 4.
+    #[serde(default = "default_agent")]
+    pub agent: String,
+    /// Passed to the agent as-is, e.g. `haiku`. The agent's own default when absent.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+fn default_agent() -> String {
+    "claude-code".into()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SessionPrompt {
+    pub session_id: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SessionId {
+    pub session_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ApprovalResolve {
+    pub request_id: String,
+    pub decision: crate::schema::Decision,
+}
+
+/// `session.subscribe` answers once, then the connection carries one `event` notification per
+/// line: `{"jsonrpc":"2.0","method":"event","params":<Event>}`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Subscribe {
+    #[serde(default)]
+    pub after_seq: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Notification {
+    pub jsonrpc: String,
+    pub method: String,
+    pub params: Value,
+}
+
 #[cfg(feature = "local-client")]
 pub use client::*;
 
@@ -125,6 +191,34 @@ mod client {
 
     /// One blocking request on a fresh connection. Callers on a UI thread run it in the background.
     pub fn call<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, CallError> {
+        let (_, value) = request(method, params)?;
+        serde_json::from_value(value).map_err(CallError::Decode)
+    }
+
+    /// Streams every event after `after_seq`, old ones first, until the daemon goes away or
+    /// `on_event` returns false. Blocks the calling thread.
+    pub fn subscribe(
+        after_seq: u64,
+        mut on_event: impl FnMut(crate::schema::Event) -> bool,
+    ) -> Result<(), CallError> {
+        let params = serde_json::json!({ "after_seq": after_seq });
+        let (mut reader, _) = request("session.subscribe", params)?;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).map_err(CallError::Io)? == 0 {
+                return Ok(());
+            }
+            let note: super::Notification =
+                serde_json::from_str(&line).map_err(CallError::Decode)?;
+            let event = serde_json::from_value(note.params).map_err(CallError::Decode)?;
+            if !on_event(event) {
+                return Ok(());
+            }
+        }
+    }
+
+    fn request(method: &str, params: Value) -> Result<(BufReader<UnixStream>, Value), CallError> {
         let mut stream = UnixStream::connect(socket_path()).map_err(CallError::Io)?;
         let request = Request {
             jsonrpc: "2.0".into(),
@@ -136,16 +230,13 @@ mod client {
         line.push('\n');
         stream.write_all(line.as_bytes()).map_err(CallError::Io)?;
 
+        let mut reader = BufReader::new(stream);
         let mut reply = String::new();
-        BufReader::new(stream)
-            .read_line(&mut reply)
-            .map_err(CallError::Io)?;
+        reader.read_line(&mut reply).map_err(CallError::Io)?;
         let response: Response = serde_json::from_str(&reply).map_err(CallError::Decode)?;
         match (response.result, response.error) {
             (_, Some(error)) => Err(CallError::Rpc(error)),
-            (result, None) => {
-                serde_json::from_value(result.unwrap_or(Value::Null)).map_err(CallError::Decode)
-            }
+            (result, None) => Ok((reader, result.unwrap_or(Value::Null))),
         }
     }
 }

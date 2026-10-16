@@ -1,6 +1,6 @@
 # Technical PRD review: open questions
 
-Review of `TECHNICAL_PRD.md` (15 Oct 2026), written 16 Oct 2026. The PRD revision of 16 Oct, after the competitor research, settled items 1, 10, 12, 13 and 19; they are marked below. Everything else is still open. Items 1 to 6 change the schema or key storage, so settle them before the first commit. The rest can become tickets.
+Review of `TECHNICAL_PRD.md` (15 Oct 2026), written 16 Oct 2026. The PRD revision of 16 Oct, after the competitor research, settled items 1, 10, 12, 13 and 19, and week 2 settled item 11; they are marked below. Everything else is still open. Items 1 to 6 change the schema or key storage, so settle them before the first commit. The rest can become tickets.
 
 ## Breaks the core scenario
 
@@ -20,7 +20,7 @@ Review of `TECHNICAL_PRD.md` (15 Oct 2026), written 16 Oct 2026. The PRD revisio
 ## Spec inconsistencies
 
 - [x] **10.** *Settled: the new mapping table in PRD §4.2 maps `permission_resolved` to `working`. Item 11 still decides what happens with several pending requests.* Originally: the ACP mapping table (§4.2) had no row for `permission_resolved`, so nothing returns a session to `working`.
-- [ ] **11.** With parallel tool calls there can be several pending requests. `next_status(current, ev)` can't tell when the last one resolves. Does it need a pending count?
+- [x] **11.** *Settled in week 2: `next_status` takes the number of permission requests still open (PRD §4.2).* Originally: With parallel tool calls there can be several pending requests. `next_status(current, ev)` can't tell when the last one resolves. Does it need a pending count?
 - [x] **12.** *Superseded: v0.1 no longer uses ACP (PRD §4.2). The same question now applies to Claude `result` subtypes and Codex turn statuses, and the contract transcripts (§9.2) pin it.* Originally: the ACP stop reasons `max_tokens`, `max_turn_requests` and `refusal` have no mapping.
 - [x] **13.** *Superseded: Codex app-server has `acceptForSession`, which `allow_session` maps to; for Claude Code it becomes a session-scoped allow rule in the `control_response`.* Originally: `allow_session` is not an ACP permission kind. ACP agents send their own `options` with an `optionId` and a kind (`allow_once`, `allow_always`, `reject_once`, `reject_always`). Should the approval carry the agent's `optionId`?
 - [ ] **14.** The SQL `session.status` includes `starting`, and the UDL `SessionStatus` enum doesn't. §4.2 mentions a PTY status `running` that appears in neither.
