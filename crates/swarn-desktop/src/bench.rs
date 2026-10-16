@@ -22,6 +22,20 @@ struct Stats {
     switches_ms: Vec<f64>,
 }
 
+/// With SWARN_TRACE_STARTUP set, prints how long after launch each startup step finished.
+pub fn mark(label: &str) {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("SWARN_TRACE_STARTUP").is_some()) {
+        return;
+    }
+    if let Some(start) = LAUNCHED.get() {
+        eprintln!(
+            "TRACE {:>8.1} ms  {label}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
 pub fn enabled() -> bool {
     std::env::var_os("SWARN_BENCH_OUT").is_some()
 }

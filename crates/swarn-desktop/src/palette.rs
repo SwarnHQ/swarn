@@ -20,6 +20,7 @@ actions!(
         StopAgent,
         OpenSetup,
         PairPhone,
+        ArchiveWorkspace,
         NextWorkspace,
         PreviousWorkspace,
         FocusComposer,
@@ -90,6 +91,11 @@ fn commands() -> Vec<(&'static str, &'static [&'static str], Box<dyn Action>)> {
             Box::new(PreviousWorkspace),
         ),
         (
+            "Archive workspace",
+            &["remove", "delete", "close", "worktree"],
+            Box::new(ArchiveWorkspace),
+        ),
+        (
             "Pair a phone",
             &["iphone", "qr", "device", "mobile"],
             Box::new(PairPhone),
@@ -143,6 +149,9 @@ pub fn register_handlers(cx: &mut App, shell: WeakEntity<Shell>) {
     on::<CreatePullRequest>(cx, &shell, |this, _, cx| this.create_pr(cx));
     on::<StopAgent>(cx, &shell, |this, _, cx| this.stop(cx));
     on::<OpenSetup>(cx, &shell, |this, _, cx| this.open_setup(cx));
+    on::<ArchiveWorkspace>(cx, &shell, |this, window, cx| {
+        this.archive_workspace(false, window, cx)
+    });
     on::<PairPhone>(cx, &shell, |this, _, cx| {
         this.open_setup(cx);
         this.start_pairing(cx);

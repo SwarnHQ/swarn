@@ -220,20 +220,8 @@ impl Sessions {
         let binary = driver
             .binary(&self.env)
             .ok_or_else(|| format!("{agent} was not found on your login shell's PATH"))?;
-        let id = ulid::Ulid::generate().to_string();
-        let row_id = id.clone();
-        self.db
-            .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO session (id, workspace_id, agent, tier, status, started_at, last_change_at)
-                     VALUES (?1, ?2, ?3, 'native', 'starting',
-                             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                    params![row_id, workspace_id, agent],
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-
+        // Spawn before the row exists, so a binary that won't start leaves no session stuck in
+        // "starting".
         let mut child = Command::new(binary)
             .args(driver.args(model.as_deref()))
             .current_dir(&worktree)
@@ -242,19 +230,25 @@ impl Sessions {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
-            .map_err(|e| format!("starting {agent}: {e}"))?;
+            .map_err(|e| {
+                format!("Couldn't start {agent}: {e}. Setup & checks shows what's missing.")
+            })?;
         let pid = child.id();
+        let id = ulid::Ulid::generate().to_string();
         let row_id = id.clone();
-        let _ = self
-            .db
+        self.db
             .call(move |conn| {
                 conn.execute(
-                    "UPDATE session SET pid = ?2 WHERE id = ?1",
-                    params![row_id, pid],
+                    "INSERT INTO session (id, workspace_id, agent, tier, status, pid, started_at, last_change_at)
+                     VALUES (?1, ?2, ?3, 'native', 'starting', ?4,
+                             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                    params![row_id, workspace_id, agent, pid],
                 )
             })
-            .await;
+            .await
+            .map_err(|e| e.to_string())?;
 
         let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
         let mut stdin = child.stdin.take().expect("piped");
