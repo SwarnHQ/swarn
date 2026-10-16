@@ -4619,6 +4619,7 @@ dependencies = [
 name = "swarn-desktop"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "gpui-pre",
  "gpui-pre-platform",
  "serde_json",

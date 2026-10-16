@@ -1,28 +1,34 @@
-//! The window's one view: Plexo's title bar, a body, and its footer strip. Everything shown comes
-//! from the daemon over the local socket; the desktop holds no state of its own.
+//! The window: Plexo's title bar, a workspace sidebar, the selected session's transcript and the
+//! footer strip. Everything shown comes from the daemon; the desktop holds no agent state (§1.1).
 
 use std::time::Duration;
 
+use futures::StreamExt;
+use futures::channel::mpsc;
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, SharedString, Window, div, prelude::*, px,
+    AnyElement, Context, FollowMode, FontWeight, ListAlignment, ListState, MouseButton,
+    SharedString, Window, div, list, prelude::*, px,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use swarn_core::local_api::{self, DaemonInfo};
-use swarn_core::schema::Repo;
+use swarn_core::schema::{Decision, Event, Repo, Session, Status, Workspace};
 
-use crate::theme::{HAIRLINE, MONO, SANS, TITLE_BAR_HEIGHT, Theme};
+use crate::model::Board;
+use crate::theme::{HAIRLINE, MONO, SANS, TITLE_BAR_HEIGHT, Theme, label};
 
 /// Plexo's 20px side gutter, used by every row and strip.
-const GUTTER: f32 = 20.;
-
-enum Board {
-    Loading,
-    Offline,
-    Ready { info: DaemonInfo, repos: Vec<Repo> },
-}
+pub const GUTTER: f32 = 20.;
+const SIDEBAR_WIDTH: f32 = 248.;
 
 pub struct Shell {
-    board: Board,
+    pub(crate) board: Board,
+    /// `None` until the first poll answers.
+    online: Option<bool>,
+    selected: Option<String>,
+    /// The transcript list and the session it currently shows.
+    pub(crate) list: ListState,
+    pub(crate) shown: Option<String>,
+    last_error: Option<String>,
 }
 
 impl Shell {
@@ -34,15 +40,13 @@ impl Shell {
         })
         .detach();
 
-        // ponytail: polls every 2 s until session.subscribe streams changes (week 2).
+        // ponytail: lists (repos, workspaces, sessions) poll every 2 s; there are no events for
+        // them yet. Transcripts and statuses come from the event stream below.
         cx.spawn(async move |this, cx| {
             loop {
-                let board = cx.background_executor().spawn(async { fetch() }).await;
+                let lists = cx.background_executor().spawn(async { fetch() }).await;
                 if this
-                    .update(cx, |this, cx| {
-                        this.board = board;
-                        cx.notify();
-                    })
+                    .update(cx, |this, cx| this.set_lists(lists, cx))
                     .is_err()
                 {
                     break; // window closed
@@ -52,38 +56,198 @@ impl Shell {
         })
         .detach();
 
+        // One thread holds the subscription and reconnects from the last seq it saw. The UI
+        // drains it in 16 ms batches, so a chatty agent costs at most one relayout per frame (§5.2).
+        let (tx, mut rx) = mpsc::unbounded::<Event>();
+        std::thread::spawn(move || {
+            let mut last = 0;
+            while !tx.is_closed() {
+                let _ = local_api::subscribe(last, |event| {
+                    last = event.seq;
+                    tx.unbounded_send(event).is_ok()
+                });
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            while let Some(first) = rx.next().await {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let mut batch = vec![first];
+                while let Ok(event) = rx.try_recv() {
+                    batch.push(event);
+                }
+                if this.update(cx, |this, cx| this.apply(&batch, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        let list = ListState::new(0, ListAlignment::Top, px(400.));
+        list.set_follow_mode(FollowMode::Tail);
         Self {
-            board: Board::Loading,
+            board: Board::default(),
+            online: None,
+            selected: None,
+            list,
+            shown: None,
+            last_error: None,
         }
+    }
+
+    fn set_lists(&mut self, lists: Option<Lists>, cx: &mut Context<Self>) {
+        self.online = Some(lists.is_some());
+        if let Some(lists) = lists {
+            self.board.info = Some(lists.info);
+            self.board.repos = lists.repos;
+            self.board.workspaces = lists.workspaces;
+            self.board.sessions = lists.sessions;
+        }
+        cx.notify();
+    }
+
+    fn apply(&mut self, batch: &[Event], cx: &mut Context<Self>) {
+        let mut dirty: Option<usize> = None;
+        for event in batch {
+            if let Some((session, ix)) = self.board.apply(event)
+                && self.shown.as_deref() == Some(session.as_str())
+            {
+                dirty = Some(dirty.map_or(ix, |d| d.min(ix)));
+            }
+        }
+        if let (Some(from), Some(shown)) = (dirty, &self.shown) {
+            let old = self.list.item_count();
+            let new = self
+                .board
+                .transcripts
+                .get(shown)
+                .map_or(0, |t| t.blocks.len());
+            let from = from.min(old);
+            self.list.splice(from..old, new - from);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn resolve(
+        &mut self,
+        request_id: String,
+        decision: Decision,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let params = json!({ "request_id": request_id, "decision": decision });
+            let result = cx
+                .background_executor()
+                .spawn(async move { local_api::call::<Value>("approval.resolve", params) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.last_error = result.err().map(|e| e.to_string());
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Keeps a valid selection, preferring a workspace that is waiting on the user.
+    fn selected_workspace(&mut self) -> Option<&Workspace> {
+        let still_there = self
+            .selected
+            .as_ref()
+            .is_some_and(|id| self.board.workspaces.iter().any(|w| &w.id == id));
+        if !still_there {
+            let waiting = self
+                .board
+                .workspaces
+                .iter()
+                .find(|w| self.board.workspace_status(&w.id) == Some(Status::NeedsInput));
+            self.selected = waiting
+                .or(self.board.workspaces.first())
+                .map(|w| w.id.clone());
+        }
+        let id = self.selected.clone()?;
+        self.board.workspaces.iter().find(|w| w.id == id)
     }
 }
 
-fn fetch() -> Board {
-    let result = local_api::call::<DaemonInfo>("daemon.info", json!({})).and_then(|info| {
-        local_api::call::<Vec<Repo>>("repo.list", json!({}))
-            .map(|repos| Board::Ready { info, repos })
-    });
-    result.unwrap_or(Board::Offline)
+struct Lists {
+    info: DaemonInfo,
+    repos: Vec<Repo>,
+    workspaces: Vec<Workspace>,
+    sessions: Vec<Session>,
+}
+
+fn fetch() -> Option<Lists> {
+    Some(Lists {
+        info: local_api::call("daemon.info", json!({})).ok()?,
+        repos: local_api::call("repo.list", json!({})).ok()?,
+        workspaces: local_api::call("workspace.list", json!({})).ok()?,
+        sessions: local_api::call("session.list", json!({})).ok()?,
+    })
 }
 
 impl Render for Shell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::get(cx);
-        let body = match &self.board {
-            Board::Loading => div().flex_1().into_any_element(),
-            Board::Offline => empty_state(
-                theme,
+        let theme = *Theme::get(cx);
+        let workspace = self.selected_workspace().cloned();
+        let session = workspace
+            .as_ref()
+            .and_then(|w| self.board.latest_session(&w.id))
+            .cloned();
+
+        let shown = session.as_ref().map(|s| s.id.clone());
+        if shown != self.shown {
+            let count = shown
+                .as_ref()
+                .and_then(|id| self.board.transcripts.get(id))
+                .map_or(0, |t| t.blocks.len());
+            self.list.reset(count);
+            self.list.scroll_to_end();
+            self.shown = shown;
+        }
+
+        let main = match (self.online, &workspace, &session) {
+            (None, _, _) => div().flex_1().into_any_element(),
+            (Some(false), _, _) => empty_state(
+                &theme,
                 "Daemon not running",
                 "Start it, and this window connects on its own:",
                 "cargo run -p swarn-daemon",
             ),
-            Board::Ready { repos, .. } if repos.is_empty() => empty_state(
-                theme,
-                "No repositories yet",
-                "Add one from a terminal:",
-                r#"swarnd call repo.add '{"path":"/path/to/repo"}'"#,
+            (Some(true), None, _) => empty_state(
+                &theme,
+                "No workspaces yet",
+                "Create one from a terminal:",
+                r#"swarnd call workspace.create '{"repo_id":"…","name":"first-task"}'"#,
             ),
-            Board::Ready { repos, .. } => repo_list(theme, repos),
+            (Some(true), Some(ws), None) => div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .child(header(&theme, ws, None))
+                .child(empty_state(
+                    &theme,
+                    "No session yet",
+                    "Start one from a terminal:",
+                    "swarnd call session.start '{\"workspace_id\":\"…\",\"prompt\":\"…\"}'",
+                ))
+                .into_any_element(),
+            (Some(true), Some(ws), Some(s)) => div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(header(&theme, ws, Some(s.status)))
+                .child(
+                    list(
+                        self.list.clone(),
+                        cx.processor(|this, ix, window, cx| this.render_block(ix, window, cx)),
+                    )
+                    .flex_1()
+                    .pb(px(12.)),
+                )
+                .into_any_element(),
         };
 
         div()
@@ -93,10 +257,185 @@ impl Render for Shell {
             .bg(theme.bg)
             .text_color(theme.text)
             .font_family(SANS)
-            .child(title_bar(theme))
-            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-            .child(footer(theme, &self.board))
+            .child(title_bar(&theme))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(self.sidebar(&theme, cx))
+                    .child(div().flex_1().min_w_0().flex().flex_col().child(main)),
+            )
+            .child(footer(
+                &theme,
+                self.online,
+                self.board.info.as_ref(),
+                self.last_error.as_deref(),
+            ))
     }
+}
+
+impl Shell {
+    fn sidebar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut column = div()
+            .id("sidebar")
+            .w(px(SIDEBAR_WIDTH))
+            .flex_none()
+            .h_full()
+            .overflow_y_scroll()
+            .bg(theme.bg_secondary)
+            .border_r(px(HAIRLINE))
+            .border_color(theme.border)
+            .pb(px(12.));
+        for repo in &self.board.repos {
+            let workspaces: Vec<&Workspace> = self
+                .board
+                .workspaces
+                .iter()
+                .filter(|w| w.repo_id == repo.id)
+                .collect();
+            let name = repo
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&repo.path)
+                .to_owned();
+            column = column.child(
+                div()
+                    .px(px(16.))
+                    .pt(px(16.))
+                    .pb(px(6.))
+                    .child(label(theme, name)),
+            );
+            if workspaces.is_empty() {
+                column = column.child(
+                    div()
+                        .px(px(16.))
+                        .py(px(4.))
+                        .text_size(px(12.))
+                        .text_color(theme.text_tertiary)
+                        .child("No workspaces"),
+                );
+            }
+            for ws in workspaces {
+                let status = self.board.workspace_status(&ws.id);
+                let selected = self.selected.as_deref() == Some(ws.id.as_str());
+                let id = ws.id.clone();
+                let hue = theme.status_hue(status);
+                column = column.child(
+                    div()
+                        .id(SharedString::from(format!("ws-{}", ws.id)))
+                        .mx(px(8.))
+                        .px(px(8.))
+                        .py(px(7.))
+                        .rounded(px(6.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .when(selected, |d| d.bg(theme.track_bg))
+                        .when(!selected, |d| d.hover(|s| s.bg(theme.border_subtle)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.selected = Some(id.clone());
+                            cx.notify();
+                        }))
+                        .child(div().size(px(7.)).flex_none().rounded_full().bg(hue.solid))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(ws.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_family(MONO)
+                                .text_size(px(10.5))
+                                .text_color(if status == Some(Status::NeedsInput) {
+                                    hue.text
+                                } else {
+                                    theme.text_tertiary
+                                })
+                                .child(status_word(status)),
+                        ),
+                );
+            }
+        }
+        column
+    }
+}
+
+pub fn status_word(status: Option<Status>) -> &'static str {
+    match status {
+        None => "idle",
+        Some(Status::Starting) => "starting",
+        Some(Status::Working) => "working",
+        Some(Status::NeedsInput) => "needs you",
+        Some(Status::Done) => "done",
+        Some(Status::Failed) => "failed",
+        Some(Status::Exited) => "ended",
+    }
+}
+
+/// Above the transcript: workspace name, branch, and a Plexo status pill.
+fn header(theme: &Theme, ws: &Workspace, status: Option<Status>) -> impl IntoElement {
+    let hue = theme.status_hue(status);
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .px(px(GUTTER))
+        .py(px(12.))
+        .border_b(px(HAIRLINE))
+        .border_color(theme.border)
+        .child(
+            div()
+                .text_size(px(14.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(ws.name.clone()),
+        )
+        .child(chip(theme, ws.branch.clone()))
+        .child(div().flex_1())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(10.))
+                .py(px(4.))
+                .rounded_full()
+                .border(px(1.))
+                .border_color(hue.border)
+                .bg(hue.bg)
+                .child(div().size(px(6.)).rounded_full().bg(hue.solid))
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(px(10.5))
+                        .line_height(px(10.5))
+                        .text_color(hue.text)
+                        .child(status_word(status).to_uppercase()),
+                ),
+        )
+}
+
+pub fn chip(theme: &Theme, text: impl Into<SharedString>) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px(px(6.))
+        .py(px(3.))
+        .rounded(px(4.))
+        .border(px(HAIRLINE))
+        .border_color(theme.border_strong)
+        .bg(theme.bg_secondary)
+        .font_family(MONO)
+        .text_size(px(10.5))
+        .line_height(px(10.5))
+        .text_color(theme.text_secondary)
+        .child(text.into())
 }
 
 /// Plexo's title bar: the app name centred on a strip drawn under the native traffic lights.
@@ -127,116 +466,6 @@ fn title_bar(theme: &Theme) -> impl IntoElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_secondary)
                 .child("Swarn"),
-        )
-}
-
-/// Plexo's small-caps section label: mono, uppercase, tertiary. GPUI has no letter-spacing, so the
-/// tracking Plexo adds is missing here.
-fn label(theme: &Theme, text: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .font_family(MONO)
-        .text_size(px(10.5))
-        .line_height(px(10.5))
-        .text_color(theme.text_tertiary)
-        .child(text.into().to_uppercase())
-}
-
-fn repo_list(theme: &Theme, repos: &[Repo]) -> AnyElement {
-    let count = if repos.len() == 1 {
-        "1 repository".to_owned()
-    } else {
-        format!("{} repositories", repos.len())
-    };
-    div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .px(px(GUTTER))
-                .pt(px(18.))
-                .pb(px(10.))
-                .border_b(px(HAIRLINE))
-                .border_color(theme.border)
-                .child(label(theme, "Repositories"))
-                .child(
-                    div()
-                        .font_family(MONO)
-                        .text_size(px(11.))
-                        .text_color(theme.text_tertiary)
-                        .child(count),
-                ),
-        )
-        .child(
-            div()
-                .id("repos")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .children(repos.iter().map(|repo| repo_row(theme, repo))),
-        )
-        .into_any_element()
-}
-
-fn repo_row(theme: &Theme, repo: &Repo) -> impl IntoElement {
-    let name = repo
-        .path
-        .rsplit('/')
-        .next()
-        .unwrap_or(&repo.path)
-        .to_owned();
-    div()
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .px(px(GUTTER))
-        .py(px(11.))
-        .border_b(px(HAIRLINE))
-        .border_color(theme.border_subtle)
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(5.))
-                .child(
-                    div()
-                        .text_size(px(13.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .truncate()
-                        .child(name),
-                )
-                .child(
-                    div()
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .text_color(theme.text_secondary)
-                        // The end of a path is the part that tells repos apart.
-                        .whitespace_nowrap()
-                        .overflow_hidden()
-                        .text_ellipsis_start()
-                        .child(repo.path.clone()),
-                ),
-        )
-        .child(
-            div()
-                .flex_none()
-                .px(px(6.))
-                .py(px(3.))
-                .rounded(px(4.))
-                .border(px(HAIRLINE))
-                .border_color(theme.border_strong)
-                .bg(theme.bg_secondary)
-                .font_family(MONO)
-                .text_size(px(10.5))
-                .line_height(px(10.5))
-                .text_color(theme.text_secondary)
-                .child(repo.default_branch.clone()),
         )
 }
 
@@ -283,11 +512,17 @@ fn empty_state(
 }
 
 /// Plexo's ScreenFooter: one mono status line on the secondary surface.
-fn footer(theme: &Theme, board: &Board) -> impl IntoElement {
-    let (dot, text): (_, SharedString) = match board {
-        Board::Loading => (theme.icon_muted, "Connecting…".into()),
-        Board::Offline => (theme.danger, "Daemon offline · retrying every 2 s".into()),
-        Board::Ready { info, .. } => (
+fn footer(
+    theme: &Theme,
+    online: Option<bool>,
+    info: Option<&DaemonInfo>,
+    error: Option<&str>,
+) -> impl IntoElement {
+    let (dot, text): (_, SharedString) = match (online, info, error) {
+        (_, _, Some(error)) => (theme.danger, error.to_owned().into()),
+        (None, _, _) => (theme.icon_muted, "Connecting…".into()),
+        (Some(false), _, _) => (theme.danger, "Daemon offline · retrying every 2 s".into()),
+        (Some(true), Some(info), _) => (
             theme.success,
             format!(
                 "{} · swarnd {} · schema {}",
@@ -295,6 +530,7 @@ fn footer(theme: &Theme, board: &Board) -> impl IntoElement {
             )
             .into(),
         ),
+        (Some(true), None, _) => (theme.success, "Connected".into()),
     };
     div()
         .flex_none()
