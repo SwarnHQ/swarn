@@ -162,13 +162,23 @@ impl Shell {
                 )
                 .into_any_element()
         } else {
-            let outcome = match (a.decision.as_deref(), a.reason.as_deref()) {
+            let mut outcome = match (a.decision.as_deref(), a.reason.as_deref()) {
                 (None, _) => "The session ended before an answer".to_owned(),
                 (Some("allow_once"), _) => "Allowed once".to_owned(),
                 (Some("allow_session"), _) => "Allowed for this session".to_owned(),
                 (Some(_), Some(reason)) => format!("Denied ({reason})"),
                 (Some(_), None) => "Denied".to_owned(),
             };
+            // Answers from a paired phone say which one.
+            if let Some(by) = a.by.as_deref().filter(|by| *by != "local") {
+                let name = self
+                    .devices
+                    .iter()
+                    .find(|d| d["id"] == by)
+                    .and_then(|d| d["name"].as_str())
+                    .unwrap_or("a phone");
+                outcome.push_str(&format!(" from {name}"));
+            }
             div()
                 .font_family(MONO)
                 .text_size(px(11.5))

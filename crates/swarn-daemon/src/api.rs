@@ -20,6 +20,7 @@ use tokio::process::Command;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::db::Db;
+use crate::devices::Devices;
 use crate::env::AgentEnv;
 use crate::events::EventLog;
 use crate::review;
@@ -34,6 +35,8 @@ pub struct Api {
     pub log: EventLog,
     pub sessions: Arc<Sessions>,
     pub env: AgentEnv,
+    pub devices: Arc<Devices>,
+    pub mdns_instance: Option<String>,
 }
 
 impl Api {
@@ -118,6 +121,33 @@ impl Api {
                 .await
                 .map(|w| json!(w))
                 .map_err(Failed),
+            "device.pair_window" => {
+                let port = self.info.device_port.unwrap_or(0);
+                if port == 0 {
+                    Err(Failed(
+                        "The device listener isn't running; is another swarnd using port 8787?"
+                            .into(),
+                    ))
+                } else {
+                    let candidates = crate::discovery::candidates(
+                        &self.env,
+                        port,
+                        self.mdns_instance.as_deref(),
+                    )
+                    .await;
+                    Ok(self.devices.pair_window(&candidates, ""))
+                }
+            }
+            "device.list" => self.devices.list().await.map_err(Failed),
+            "device.revoke" => match p["device_id"].as_str() {
+                Some(id) => self
+                    .devices
+                    .revoke(id.to_owned())
+                    .await
+                    .map(|()| json!({}))
+                    .map_err(Failed),
+                None => Err(Invalid("device_id is required".into())),
+            },
             "setup.check" => Ok(crate::setup::check(&self.env).await),
             "policy.get" => Ok(json!(crate::policy::load())),
             "policy.set" => match params::<swarn_core::local_api::Policy>(p) {
@@ -360,6 +390,7 @@ pub async fn machine_info(db: &Db) -> rusqlite::Result<DaemonInfo> {
             version: env!("CARGO_PKG_VERSION").into(),
             schema_min: swarn_core::schema::SCHEMA_MIN,
             schema_max: swarn_core::schema::SCHEMA_MAX,
+            device_port: None,
         })
     })
     .await

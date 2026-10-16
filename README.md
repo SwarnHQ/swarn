@@ -65,6 +65,14 @@ The desktop app shows the transcript and an approval card whenever the agent ask
 `swarnd watch` does the same in a terminal and prints the exact `approval.resolve` command. Sessions use your own `claude` and your own login, so sign in with
 `claude /login` first.
 
+Until the iPhone app exists, `swarn-fake-phone` stands in for it. It pairs with the running daemon
+over the real sealed protocol, prints every event, and with `--approve` answers permission requests
+with signed approvals:
+
+```bash
+cargo run -p swarn-bench --bin swarn-fake-phone -- --approve
+```
+
 The daemon keeps its socket and database in `~/Library/Application Support/swarn`. Set `SWARN_HOME`
 on both processes to point them somewhere else, which is handy for experiments.
 

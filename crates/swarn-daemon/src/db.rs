@@ -54,5 +54,12 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", 1)?;
         tx.commit()?;
     }
+    if version < 2 {
+        // v2: the last frame counter accepted from each device, for replay protection.
+        let tx = conn.transaction()?;
+        tx.execute_batch("ALTER TABLE device ADD COLUMN last_ctr INTEGER NOT NULL DEFAULT 0;")?;
+        tx.pragma_update(None, "user_version", 2)?;
+        tx.commit()?;
+    }
     Ok(())
 }

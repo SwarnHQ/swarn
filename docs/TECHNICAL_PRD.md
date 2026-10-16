@@ -207,7 +207,7 @@ swarn://pair?v=1
   &sk=<daemon static X25519 pubkey>     # 32 bytes, base64url
   &vk=<daemon Ed25519 verify key>
   &pw=<pairing window token>            # 16 bytes, valid 120 s, single use
-  &c=<candidates>                       # see 2.7
+  &c=<candidates>                       # see 2.7; kind~host~port, comma separated
   &g=<gateway base URL>
 ```
 

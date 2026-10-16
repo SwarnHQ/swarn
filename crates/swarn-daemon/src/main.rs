@@ -9,8 +9,11 @@ mod api;
 mod claude;
 mod codex;
 mod db;
+mod devices;
+mod discovery;
 mod env;
 mod events;
+mod identity;
 mod policy;
 mod review;
 mod sessions;
@@ -178,10 +181,41 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         )
     })
     .await?;
-    let info = api::machine_info(&db).await?;
+    let mut info = api::machine_info(&db).await?;
     let agent_env = env::AgentEnv::capture().await;
     let log = events::EventLog::new(db.clone());
     let sessions = sessions::Sessions::new(db.clone(), log.clone(), agent_env.clone());
+    let identity = std::sync::Arc::new(identity::Identity::load_or_create(&home)?);
+
+    // Phones connect here (§2.7). SWARN_DEVICE_PORT=0 picks a free port (tests). A port already
+    // in use (a second daemon) leaves this one without a device listener rather than not running.
+    let port: u16 = std::env::var("SWARN_DEVICE_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8787);
+    let device_listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+        Ok(listener) => {
+            info.device_port = listener.local_addr().ok().map(|a| a.port());
+            Some(listener)
+        }
+        Err(e) => {
+            eprintln!("swarnd: no device listener on port {port}: {e}");
+            None
+        }
+    };
+    let mdns = info
+        .device_port
+        .and_then(|port| discovery::register_mdns(&info.machine_name, port));
+    let devices = devices::Devices::new(
+        db.clone(),
+        log.clone(),
+        sessions.clone(),
+        identity,
+        info.clone(),
+    );
+    if let Some(listener) = device_listener {
+        tokio::spawn(devices.clone().listen(listener));
+    }
     let api = api::Api {
         db,
         info,
@@ -189,6 +223,8 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         log,
         sessions,
         env: agent_env,
+        devices,
+        mdns_instance: mdns.as_ref().map(|(_, instance)| instance.clone()),
     };
 
     tokio::spawn(policy::keep_awake(api.db.clone()));

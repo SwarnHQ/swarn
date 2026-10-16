@@ -18,6 +18,9 @@ pub struct Setup {
 
 impl Shell {
     pub(crate) fn open_setup(&mut self, cx: &mut Context<Self>) {
+        if self.setup.is_some() {
+            return; // already open, with its recheck loop running
+        }
         self.setup = Some(Setup {
             check: None,
             policy: None,
@@ -44,6 +47,7 @@ impl Shell {
     }
 
     fn recheck(&mut self, cx: &mut Context<Self>) {
+        self.load_devices(cx);
         self.call::<Value>(
             "setup.check",
             json!({}),
@@ -189,16 +193,18 @@ impl Shell {
             );
         }
 
-        page.child(div().flex().justify_end().mt(px(8.)).child(
-            button(theme, "setup-done", "Continue", ButtonKind::Primary).on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.setup = None;
-                    this.setup_seen = true;
-                    cx.notify();
-                },
-            )),
-        ))
-        .into_any_element()
+        page.child(self.phone_section(theme, cx))
+            .child(div().flex().justify_end().mt(px(8.)).child(
+                button(theme, "setup-done", "Continue", ButtonKind::Primary).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.setup = None;
+                        this.pairing = None;
+                        this.setup_seen = true;
+                        cx.notify();
+                    },
+                )),
+            ))
+            .into_any_element()
     }
 
     /// Plexo's segmented toggle, two approval modes.

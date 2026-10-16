@@ -7,10 +7,14 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+use rusqlite::OptionalExtension;
 use rusqlite::params;
 use serde_json::{Value, json};
+use swarn_core::crypto;
 use swarn_core::local_api::ApprovalMode;
-use swarn_core::schema::{Decision, EventKind, Session};
+use swarn_core::schema::{Approval, Decision, EventKind, Session};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -435,6 +439,17 @@ impl Sessions {
         decision: Decision,
         reason: Option<&str>,
     ) -> Result<(), String> {
+        self.resolve_as(request_id, decision, reason, "local").await
+    }
+
+    /// `device` is who decided: "local" for the desktop and daemon, else a paired device's id.
+    async fn resolve_as(
+        &self,
+        request_id: &str,
+        decision: Decision,
+        reason: Option<&str>,
+        device: &str,
+    ) -> Result<(), String> {
         let (session_id, remaining) = {
             let mut live = self.live.lock().unwrap();
             let (session_id, session) = live
@@ -448,22 +463,23 @@ impl Sessions {
         };
 
         let decision_str = serde_json::to_value(decision).expect("Decision serialises");
-        let (rid, d) = (
+        let (rid, d, who) = (
             request_id.to_owned(),
             decision_str.as_str().unwrap_or("deny").to_owned(),
+            device.to_owned(),
         );
         let _ = self
             .db
             .call(move |conn| {
                 conn.execute(
-                    "UPDATE approval SET resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), decision = ?2, device_id = 'local'
+                    "UPDATE approval SET resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), decision = ?2, device_id = ?3
                      WHERE request_id = ?1",
-                    params![rid, d],
+                    params![rid, d, who],
                 )
             })
             .await;
         let mut payload =
-            json!({ "request_id": request_id, "decision": decision_str, "device_id": "local" });
+            json!({ "request_id": request_id, "decision": decision_str, "device_id": device });
         if let Some(reason) = reason {
             payload["reason"] = json!(reason);
         }
@@ -477,6 +493,79 @@ impl Sessions {
             .await;
         self.flush(&session_id).await;
         Ok(())
+    }
+
+    /// An approval from a paired device (§2.6). Refused when the request is unknown, already
+    /// answered, the nonce or device doesn't match, the signature doesn't verify against the
+    /// device's stored P-256 key, it's signed more than 60 s in the future, or the request expired.
+    /// Every refusal of a real request is logged as `permission_resolved` with `rejected: true` and
+    /// the reason; nothing reaches the agent.
+    pub async fn resolve_signed(
+        &self,
+        approval: &Approval,
+        device_id: &str,
+        p256: &[u8],
+    ) -> Result<(), String> {
+        let (rid, signed_at) = (approval.request_id.clone(), approval.signed_at.clone());
+        let row: Option<(String, String, Option<String>, bool, bool)> = self
+            .db
+            .call(move |conn| {
+                conn.query_row(
+                    "SELECT session_id, nonce, resolved_at,
+                            COALESCE(CAST(strftime('%s', ?2) AS INTEGER) > CAST(strftime('%s', 'now', '+60 seconds') AS INTEGER), 1),
+                            CAST(strftime('%s', 'now') AS INTEGER) > CAST(strftime('%s', expires_at) AS INTEGER)
+                     FROM approval WHERE request_id = ?1",
+                    params![rid, signed_at],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .optional()
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        let Some((session_id, nonce, resolved_at, future, expired)) = row else {
+            return Err("unknown_request".into());
+        };
+        let decision = serde_json::to_value(approval.decision).expect("Decision serialises");
+        let input = crypto::approval_signing_input(
+            &approval.request_id,
+            &approval.nonce,
+            decision.as_str().unwrap_or_default(),
+            &approval.device_id,
+            &approval.signed_at,
+        );
+        let signature = B64.decode(&approval.sig).unwrap_or_default();
+        let refusal = if resolved_at.is_some() {
+            Some("already_resolved")
+        } else if approval.nonce != nonce {
+            Some("nonce_mismatch")
+        } else if approval.device_id != device_id {
+            Some("wrong_device")
+        } else if crypto::verify(p256, &input, &signature).is_err() {
+            Some("bad_signature")
+        } else if future {
+            Some("signed_in_future")
+        } else if expired {
+            Some("expired")
+        } else {
+            None
+        };
+        match refusal {
+            None => {
+                self.resolve_as(&approval.request_id, approval.decision, None, device_id)
+                    .await
+            }
+            Some(reason) => {
+                let payload = json!({
+                    "request_id": approval.request_id, "decision": decision, "device_id": device_id,
+                    "rejected": true, "reason": reason,
+                });
+                let pending = self.pending_count(&session_id);
+                self.log
+                    .append(&session_id, EventKind::PermissionResolved, payload, pending)
+                    .await;
+                Err(reason.to_owned())
+            }
+        }
     }
 
     /// Sends a follow-up now, or holds it until the agent can take it.
