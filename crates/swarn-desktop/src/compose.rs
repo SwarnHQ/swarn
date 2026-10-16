@@ -169,9 +169,13 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(
-                    async move { local_api::call::<T>(method, params).map_err(|e| e.to_string()) },
-                )
+                .spawn(async move {
+                    // The daemon's message is written for people; its JSON-RPC code is not.
+                    local_api::call::<T>(method, params).map_err(|e| match e {
+                        local_api::CallError::Rpc(rpc) => rpc.message,
+                        other => other.to_string(),
+                    })
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.last_error = result.as_ref().err().cloned();

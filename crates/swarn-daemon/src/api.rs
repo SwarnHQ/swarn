@@ -323,6 +323,9 @@ impl Api {
 
     /// Idempotent: adding a repo twice returns the existing row.
     async fn repo_add(&self, path: String) -> Result<Repo, Failure> {
+        if !std::path::Path::new(&path).is_dir() {
+            return Err(Failed(format!("{path} doesn't exist or isn't a folder")));
+        }
         let root = run_git(&path, &["rev-parse", "--show-toplevel"])
             .await
             .map_err(|_| Failed(format!("{path} is not inside a git repository")))?;

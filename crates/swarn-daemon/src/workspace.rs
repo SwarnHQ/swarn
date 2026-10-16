@@ -31,6 +31,20 @@ pub async fn create(
         ));
     }
 
+    // Checked up front so the answer is a sentence, not git's "fatal:" from halfway through.
+    let branch_ref = format!("refs/heads/swarn/{name}");
+    if run_git(
+        &repo.path,
+        &["rev-parse", "--verify", "--quiet", &branch_ref],
+    )
+    .await
+    .is_ok()
+    {
+        return Err(format!(
+            "The branch swarn/{name} already exists, maybe from an archived workspace. Pick another name."
+        ));
+    }
+
     let repo_dir = Path::new(&repo.path)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -66,7 +80,7 @@ pub async fn create(
 
     let outcome = async {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(parent).map_err(|e| (false, e.to_string()))?;
         }
         run_git(
             &repo.path,
@@ -79,22 +93,25 @@ pub async fn create(
                 &workspace.base_ref,
             ],
         )
-        .await?;
-        copy_included(Path::new(&repo.path), &path).await
+        .await
+        .map_err(|e| (false, e))?;
+        copy_included(Path::new(&repo.path), &path)
+            .await
+            .map_err(|e| (true, e))
     }
     .await;
 
-    let state = if outcome.is_ok() { "ready" } else { "failed" };
+    // No worktree on disk means nothing to show or clean up later, so the row goes too.
+    let sql = match &outcome {
+        Ok(_) => "UPDATE workspace SET state = 'ready' WHERE id = ?1",
+        Err((true, _)) => "UPDATE workspace SET state = 'failed' WHERE id = ?1",
+        Err((false, _)) => "DELETE FROM workspace WHERE id = ?1",
+    };
     let id = workspace.id.clone();
-    db.call(move |conn| {
-        conn.execute(
-            "UPDATE workspace SET state = ?2 WHERE id = ?1",
-            params![id, state],
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    outcome?;
+    db.call(move |conn| conn.execute(sql, [id]))
+        .await
+        .map_err(|e| e.to_string())?;
+    outcome.map_err(|(_, e)| e)?;
     // ponytail: no setup script or port block yet; both need repo configuration, which lands with first run (§5.5 step 6).
     get(db, &workspace.id)
         .await?

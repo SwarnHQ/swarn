@@ -102,4 +102,15 @@ fn desktop_can_list_what_was_added() {
         diff.contains("+fresh") && diff.contains("new.txt"),
         "{diff}"
     );
+
+    // Reusing a name is refused in plain words and leaves no half-made workspace behind.
+    match call::<Value>(
+        "workspace.create",
+        json!({ "repo_id": listed[0].id, "name": "review" }),
+    ) {
+        Err(CallError::Rpc(e)) => assert!(e.message.contains("already exists"), "{}", e.message),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    let all: Vec<Workspace> = call("workspace.list", json!({})).unwrap();
+    assert_eq!(all.len(), 1);
 }
