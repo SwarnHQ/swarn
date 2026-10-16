@@ -3,6 +3,7 @@ mod diff;
 mod markdown;
 mod model;
 mod notify;
+mod palette;
 mod review;
 mod service;
 mod setup;
@@ -43,6 +44,7 @@ fn main() {
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
             .expect("bundled fonts load");
         gpui_component::init(cx);
+        palette::bind_keys(cx);
 
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &CloseWindow, cx| {
@@ -84,6 +86,9 @@ fn open_main_window(cx: &mut App) {
         },
         |window, cx| {
             let shell = cx.new(|cx| Shell::new(window, cx));
+            // Keyboard actions reach the shell from the start, before anything is clicked.
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
             // gpui-component's Root hosts the overlays its widgets need (menus, popovers).
             cx.new(|cx| gpui_component::Root::new(shell, window, cx))
         },

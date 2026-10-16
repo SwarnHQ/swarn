@@ -7,8 +7,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
-    AnyElement, Context, Entity, FollowMode, FontWeight, ListAlignment, ListState, MouseButton,
-    SharedString, Window, div, list, prelude::*, px,
+    AnyElement, Context, Entity, FocusHandle, FollowMode, FontWeight, ListAlignment, ListState,
+    MouseButton, SharedString, Window, div, list, prelude::*, px,
 };
 use serde_json::{Value, json};
 use swarn_core::local_api::{self, DaemonInfo};
@@ -49,6 +49,8 @@ pub struct Shell {
     pub(crate) notice: Option<String>,
     /// Notification tags to the workspace each one is about.
     pub(crate) notified: HashMap<String, String>,
+    /// The root's focus, so keyboard actions reach this view when nothing inside has focus.
+    pub(crate) focus: FocusHandle,
     pub(crate) setup: Option<Setup>,
     /// The first-run checklist opens by itself once, on a daemon with no repositories yet.
     pub(crate) setup_seen: bool,
@@ -134,6 +136,7 @@ impl Shell {
             pr_busy: false,
             notice: None,
             notified: HashMap::new(),
+            focus: cx.focus_handle(),
             setup: None,
             setup_seen: false,
             service: Service::NotBundled,
@@ -342,7 +345,8 @@ impl Render for Shell {
                 .into_any_element(),
         };
 
-        div()
+        let root = div().track_focus(&self.focus).key_context("Swarn");
+        self.on_actions(root, cx)
             .size_full()
             .flex()
             .flex_col()
