@@ -17,12 +17,34 @@ display's next refresh, so it sits near one refresh interval by construction. Th
 budget is read here as draw time; if it was meant end to end, the budget needs a second look on a
 120 Hz display.
 
-## The cold start miss
+## Cold start, fixed in week 7
 
-608 ms is measured from the top of `main` to the first render that has the daemon's lists. Not yet
-profiled. Likely costs, to check first: `gpui_component::init` (it sets up themes, locales and a
-dozen widget subsystems), loading seven font files, and the four sequential socket calls of the
-first poll. Fixing it is week 7 work.
+The 608 ms above came from the first launch of a freshly built binary. `SWARN_TRACE_STARTUP=1`
+prints when each startup step finishes; a warm launch looked like this:
+
+| Step | Finished at |
+| --- | --- |
+| GPUI platform up | 62 ms |
+| `gpui_component::init` | 158 ms |
+| Window open, first frame | 208 ms |
+| Daemon lists in the window | 274 ms |
+
+The first launch after a build spends about 370 ms more creating the window, which looks like
+macOS compiling Metal shaders and checking the new binary's signature, once.
+
+The fix reads the daemon's lists on a thread started at the top of `main`, so the socket calls
+overlap GPUI's own startup, and applies them in the window's constructor when they're ready, so the
+first frame already shows real data. A warm launch now reaches a connected board in about 200 ms.
+
+Second bench run after the fix, release build, 10 agents at 50 deltas/s for 15 s:
+
+| Measure | Result | Budget |
+| --- | --- | --- |
+| Cold start to a connected board | 196 ms | under 400 ms, met |
+| Draw time p99 | 5.1 ms | under 8.3 ms, met |
+| RSS, desktop and daemon | 113.1 MB | under 250 MB, met |
+
+The first run after the same build measured 528 ms, for the one-off reason above.
 
 ## Running it
 

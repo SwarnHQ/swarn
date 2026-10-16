@@ -35,6 +35,7 @@ const FONTS: [&[u8]; 7] = [
 
 fn main() {
     bench::launched();
+    shell::prefetch();
     let app = gpui_platform::application();
     // macOS keeps the app alive with no windows; a Dock click brings the window back.
     app.on_reopen(|cx| {
@@ -42,11 +43,15 @@ fn main() {
             open_main_window(cx);
         }
     });
+    bench::mark("application created");
     app.run(|cx: &mut App| {
+        bench::mark("run entered");
         cx.text_system()
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
             .expect("bundled fonts load");
+        bench::mark("fonts added");
         gpui_component::init(cx);
+        bench::mark("gpui_component::init");
         palette::bind_keys(cx);
 
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -68,6 +73,7 @@ fn main() {
         }]);
 
         open_main_window(cx);
+        bench::mark("window opened");
         cx.activate(true);
     });
 }

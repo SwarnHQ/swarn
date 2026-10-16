@@ -72,8 +72,21 @@ impl Shell {
         // ponytail: lists (repos, workspaces, sessions) poll every 2 s; there are no events for
         // them yet. Transcripts and statuses come from the event stream below.
         cx.spawn(async move |this, cx| {
+            // The first answer was requested at the top of `main`, while GPUI was still starting.
+            let mut first = PREFETCH.lock().unwrap().take();
+            if first.is_none() {
+                // Already applied in the constructor; wait a poll interval before the next read.
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+            }
             loop {
-                let lists = cx.background_executor().spawn(async { fetch() }).await;
+                let lists = match first.take() {
+                    Some(prefetched) => {
+                        cx.background_executor()
+                            .spawn(async move { prefetched.join().ok().flatten() })
+                            .await
+                    }
+                    None => cx.background_executor().spawn(async { fetch() }).await,
+                };
                 if this
                     .update(cx, |this, cx| this.set_lists(lists, cx))
                     .is_err()
@@ -125,7 +138,7 @@ impl Shell {
         if crate::bench::enabled() {
             crate::bench::start(window, cx);
         }
-        Self {
+        let mut shell = Self {
             board: Board::default(),
             online: None,
             selected: None,
@@ -147,7 +160,17 @@ impl Shell {
             pairing: None,
             setup_seen: false,
             service: Service::NotBundled,
+        };
+        // Usually the prefetch has finished by now: show real data in the very first frame instead of
+        // waiting for the poll task's first turn.
+        let finished = PREFETCH
+            .lock()
+            .unwrap()
+            .take_if(|handle| handle.is_finished());
+        if let Some(lists) = finished.and_then(|handle| handle.join().ok()) {
+            shell.set_lists(lists, cx);
         }
+        shell
     }
 
     /// Re-reads the lists now instead of at the next poll, after something this window changed.
@@ -174,6 +197,7 @@ impl Shell {
         }
         if lists.is_some() {
             crate::bench::connected();
+            crate::bench::mark("lists arrived");
         }
         if let Some(lists) = lists {
             self.board.info = Some(lists.info);
@@ -268,6 +292,15 @@ struct Lists {
     workspaces: Vec<Workspace>,
     sessions: Vec<Session>,
     devices: Vec<serde_json::Value>,
+}
+
+static PREFETCH: std::sync::Mutex<Option<std::thread::JoinHandle<Option<Lists>>>> =
+    std::sync::Mutex::new(None);
+
+/// Starts reading the daemon's lists on a thread, before GPUI is up, so they're ready by the time
+/// the window is (cold start, §8.1).
+pub fn prefetch() {
+    *PREFETCH.lock().unwrap() = Some(std::thread::spawn(fetch));
 }
 
 fn fetch() -> Option<Lists> {
