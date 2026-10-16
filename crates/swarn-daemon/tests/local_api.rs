@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use swarn_core::local_api::{CallError, DaemonInfo, RpcError, call, socket_path};
-use swarn_core::schema::Repo;
+use swarn_core::schema::{Repo, Workspace};
 
 struct Daemon(Child);
 
@@ -74,4 +74,32 @@ fn desktop_can_list_what_was_added() {
         Err(CallError::Rpc(e)) => assert_eq!(e.code, RpcError::METHOD_NOT_FOUND),
         other => panic!("expected method not found, got {other:?}"),
     }
+    // A workspace's diff covers both a committed edit and a new file nobody staged.
+    std::fs::write(repo_dir.path().join("a.txt"), "one\n").unwrap();
+    git(&["add", "a.txt"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "-m",
+        "init",
+    ]);
+    let ws: Workspace = call(
+        "workspace.create",
+        json!({ "repo_id": listed[0].id, "name": "review" }),
+    )
+    .unwrap();
+    let wt = std::path::Path::new(&ws.worktree_path);
+    std::fs::write(wt.join("a.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(wt.join("new.txt"), "fresh\n").unwrap();
+    let diff: Value = call("diff.get", json!({ "workspace_id": ws.id })).unwrap();
+    let diff = diff["diff"].as_str().unwrap();
+    assert!(diff.contains("+two"), "{diff}");
+    assert!(
+        diff.contains("+fresh") && diff.contains("new.txt"),
+        "{diff}"
+    );
 }

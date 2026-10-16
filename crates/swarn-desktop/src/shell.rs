@@ -1,6 +1,7 @@
 //! The window: Plexo's title bar, a workspace sidebar, the selected session's transcript and the
 //! footer strip. Everything shown comes from the daemon; the desktop holds no agent state (§1.1).
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -11,12 +12,13 @@ use gpui::{
 };
 use serde_json::{Value, json};
 use swarn_core::local_api::{self, DaemonInfo};
-use swarn_core::schema::{Decision, Event, Repo, Session, Status, Workspace};
+use swarn_core::schema::{Decision, Event, EventKind, Repo, Session, Status, Workspace};
 
 use gpui_component::input::TextareaState;
 
 use crate::compose::{AGENTS, NewWorkspace, composer_state};
 use crate::model::Board;
+use crate::review::{DiffState, Tab};
 use crate::theme::{HAIRLINE, MONO, SANS, TITLE_BAR_HEIGHT, Theme, label};
 
 /// Plexo's 20px side gutter, used by every row and strip.
@@ -36,6 +38,13 @@ pub struct Shell {
     /// The agent a new session starts with.
     pub(crate) agent: &'static str,
     pub(crate) form: Option<NewWorkspace>,
+    pub(crate) tab: Tab,
+    pub(crate) diff: Option<DiffState>,
+    /// Files marked viewed in the diff, as `<workspace id>:<path>`.
+    pub(crate) viewed: HashSet<String>,
+    pub(crate) pr_busy: bool,
+    /// A one-off message for the footer, such as the URL of a new pull request.
+    pub(crate) notice: Option<String>,
 }
 
 impl Shell {
@@ -105,6 +114,11 @@ impl Shell {
             composer,
             agent: AGENTS[0].0,
             form: None,
+            tab: Tab::Transcript,
+            diff: None,
+            viewed: HashSet::new(),
+            pr_busy: false,
+            notice: None,
         }
     }
 
@@ -136,6 +150,17 @@ impl Shell {
             {
                 dirty = Some(dirty.map_or(ix, |d| d.min(ix)));
             }
+        }
+        // The diff only changes when the agent finishes an edit or a turn.
+        let edited = batch.iter().any(|e| {
+            self.shown.as_deref() == Some(e.session_id.as_str())
+                && matches!(
+                    e.kind,
+                    EventKind::ToolCallUpdate | EventKind::AgentMessageEnd | EventKind::DiffStat
+                )
+        });
+        if edited && self.tab == Tab::Diff {
+            self.fetch_diff(cx);
         }
         if let (Some(from), Some(shown)) = (dirty, &self.shown) {
             let old = self.list.item_count();
@@ -252,13 +277,16 @@ impl Render for Shell {
                 .flex_1()
                 .flex()
                 .flex_col()
-                .child(header(&theme, ws, None))
-                .child(empty_state(
-                    &theme,
-                    "No session yet",
-                    "Pick an agent and describe the task below.",
-                    None,
-                ))
+                .child(header(&theme, ws, None, self.header_actions(&theme, cx)))
+                .child(match self.tab {
+                    Tab::Diff => self.diff_view(&theme, &ws.id, cx),
+                    Tab::Transcript => empty_state(
+                        &theme,
+                        "No session yet",
+                        "Pick an agent and describe the task below.",
+                        None,
+                    ),
+                })
                 .child(self.composer(&theme, &ws.id, cx))
                 .into_any_element(),
             (Some(true), Some(ws), Some(s)) => div()
@@ -266,15 +294,22 @@ impl Render for Shell {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .child(header(&theme, ws, Some(s.status)))
-                .child(
-                    list(
+                .child(header(
+                    &theme,
+                    ws,
+                    Some(s.status),
+                    self.header_actions(&theme, cx),
+                ))
+                .child(match self.tab {
+                    Tab::Diff => self.diff_view(&theme, &ws.id, cx),
+                    Tab::Transcript => list(
                         self.list.clone(),
                         cx.processor(|this, ix, window, cx| this.render_block(ix, window, cx)),
                     )
                     .flex_1()
-                    .pb(px(12.)),
-                )
+                    .pb(px(12.))
+                    .into_any_element(),
+                })
                 .child(self.composer(&theme, &ws.id, cx))
                 .into_any_element(),
         };
@@ -300,6 +335,7 @@ impl Render for Shell {
                 self.online,
                 self.board.info.as_ref(),
                 self.last_error.as_deref(),
+                self.notice.as_deref(),
             ))
     }
 }
@@ -444,7 +480,12 @@ pub fn status_word(status: Option<Status>) -> &'static str {
 }
 
 /// Above the transcript: workspace name, branch, and a Plexo status pill.
-fn header(theme: &Theme, ws: &Workspace, status: Option<Status>) -> impl IntoElement {
+fn header(
+    theme: &Theme,
+    ws: &Workspace,
+    status: Option<Status>,
+    actions: AnyElement,
+) -> impl IntoElement {
     let hue = theme.status_hue(status);
     div()
         .flex_none()
@@ -463,6 +504,7 @@ fn header(theme: &Theme, ws: &Workspace, status: Option<Status>) -> impl IntoEle
         )
         .child(chip(theme, ws.branch.clone()))
         .child(div().flex_1())
+        .child(actions)
         .child(
             div()
                 .flex()
@@ -583,9 +625,13 @@ fn footer(
     online: Option<bool>,
     info: Option<&DaemonInfo>,
     error: Option<&str>,
+    notice: Option<&str>,
 ) -> impl IntoElement {
     let (dot, text): (_, SharedString) = match (online, info, error) {
         (_, _, Some(error)) => (theme.danger, error.to_owned().into()),
+        (Some(true), _, None) if notice.is_some() => {
+            (theme.success, notice.unwrap_or_default().to_owned().into())
+        }
         (None, _, _) => (theme.icon_muted, "Connecting…".into()),
         (Some(false), _, _) => (theme.danger, "Daemon offline · retrying every 2 s".into()),
         (Some(true), Some(info), _) => (

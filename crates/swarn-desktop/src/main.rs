@@ -1,6 +1,8 @@
 mod compose;
+mod diff;
 mod markdown;
 mod model;
+mod review;
 mod shell;
 mod theme;
 mod transcript;

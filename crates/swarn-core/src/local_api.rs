@@ -93,6 +93,19 @@ pub struct WorkspaceArchive {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WorkspaceId {
+    pub workspace_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PrCreate {
+    pub workspace_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SessionStart {
     pub workspace_id: String,
     pub prompt: String,

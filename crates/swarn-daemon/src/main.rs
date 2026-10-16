@@ -11,6 +11,7 @@ mod codex;
 mod db;
 mod env;
 mod events;
+mod review;
 mod sessions;
 mod workspace;
 
@@ -178,13 +179,14 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let info = api::machine_info(&db).await?;
     let agent_env = env::AgentEnv::capture().await;
     let log = events::EventLog::new(db.clone());
-    let sessions = sessions::Sessions::new(db.clone(), log.clone(), agent_env);
+    let sessions = sessions::Sessions::new(db.clone(), log.clone(), agent_env.clone());
     let api = api::Api {
         db,
         info,
         home: home.clone(),
         log,
         sessions,
+        env: agent_env,
     };
 
     let listener = UnixListener::bind(&socket)?;
