@@ -1,0 +1,21 @@
+[package]
+name = "swarn-daemon"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "swarnd"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+swarn-core = { version = "0.1.0", path = "../swarn-core", features = ["local-client"] }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "process"] }
+ulid = "3.0.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

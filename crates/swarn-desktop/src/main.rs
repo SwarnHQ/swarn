@@ -1,12 +1,13 @@
+mod shell;
 mod theme;
 
 use std::borrow::Cow;
 
 use gpui::{
-    App, Bounds, Context, FontWeight, KeyBinding, Menu, MenuItem, MouseButton, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, actions, div, point, prelude::*, px, size,
+    App, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, actions,
+    point, prelude::*, px, size,
 };
-use theme::{HAIRLINE, SANS, TITLE_BAR_HEIGHT, Theme};
+use shell::Shell;
 
 actions!(swarn, [Quit, CloseWindow]);
 
@@ -36,7 +37,9 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &CloseWindow, cx| {
             if let Some(window) = cx.active_window() {
-                window.update(cx, |_, window, _| window.remove_window()).ok();
+                window
+                    .update(cx, |_, window, _| window.remove_window())
+                    .ok();
             }
         });
         cx.bind_keys([
@@ -72,64 +75,4 @@ fn open_main_window(cx: &mut App) {
         |window, cx| cx.new(|cx| Shell::new(window, cx)),
     )
     .expect("main window opens");
-}
-
-struct Shell;
-
-impl Shell {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Theme::sync(window, cx);
-        cx.observe_window_appearance(window, |_, window, cx| {
-            Theme::sync(window, cx);
-            cx.notify();
-        })
-        .detach();
-        Self
-    }
-}
-
-impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::get(cx);
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(theme.bg)
-            .text_color(theme.text)
-            .font_family(SANS)
-            .child(title_bar(theme))
-            .child(div().flex_1().min_h_0())
-    }
-}
-
-/// Plexo's title bar: the app name centred on a strip drawn under the native traffic lights.
-fn title_bar(theme: &Theme) -> impl IntoElement {
-    div()
-        .id("title-bar")
-        .h(px(TITLE_BAR_HEIGHT))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .px(px(94.))
-        .bg(theme.bg_secondary)
-        .border_b(px(HAIRLINE))
-        .border_color(theme.border)
-        // Plexo drags from the whole strip (`-webkit-app-region: drag`), and double-click zooms.
-        .on_mouse_down(MouseButton::Left, |event, window, _| {
-            if event.click_count == 2 {
-                window.titlebar_double_click();
-            } else {
-                window.start_window_move();
-            }
-        })
-        .child(
-            div()
-                .text_size(px(13.))
-                .line_height(px(13.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text_secondary)
-                .child("Swarn"),
-        )
 }
