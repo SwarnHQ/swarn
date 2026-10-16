@@ -17,6 +17,9 @@ Nothing has been released yet. Until v0.1 ships, fixes land on `main` only.
 
 ## Known design issues
 
+[docs/threat-model.md](docs/threat-model.md) says what Swarn defends against and lists the gaps we
+already know about.
+
 Open questions about the security design, including some unresolved ones, are tracked in
 [docs/PRD_REVIEW.md](docs/PRD_REVIEW.md). You don't need to report those again, but comments on
 them are welcome.
