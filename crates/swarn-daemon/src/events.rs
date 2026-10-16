@@ -60,6 +60,18 @@ impl EventLog {
         }
     }
 
+    /// The newest `seq` so far, 0 for an empty log.
+    pub async fn head(&self) -> u64 {
+        self.db
+            .call(|conn| {
+                conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM event", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+            })
+            .await
+            .map_or(0, |seq| seq as u64)
+    }
+
     pub async fn since(&self, after_seq: u64) -> rusqlite::Result<Vec<Event>> {
         self.db
             .call(move |conn| {

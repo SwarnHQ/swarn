@@ -60,7 +60,10 @@ impl Api {
                 };
                 send(
                     &mut write,
-                    &Response::ok(request.id, json!({ "subscribed": true })),
+                    &Response::ok(
+                        request.id,
+                        json!({ "subscribed": true, "head": self.log.head().await }),
+                    ),
                 )
                 .await?;
                 return self.stream(write, after).await;

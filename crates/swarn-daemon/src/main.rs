@@ -67,7 +67,7 @@ fn call(method: &str, params: Option<&str>) -> ExitCode {
 /// The week 2 terminal client: agent text streams inline, everything else gets its own line.
 fn watch(after_seq: u64) -> ExitCode {
     let mut mid_line = false;
-    let result = local_api::subscribe(after_seq, |event| {
+    let result = local_api::subscribe(after_seq, |event, _live| {
         print_event(&event, &mut mid_line);
         true
     });

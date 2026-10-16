@@ -2,6 +2,7 @@ mod compose;
 mod diff;
 mod markdown;
 mod model;
+mod notify;
 mod review;
 mod service;
 mod setup;

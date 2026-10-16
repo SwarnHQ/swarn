@@ -267,13 +267,16 @@ mod client {
     }
 
     /// Streams every event after `after_seq`, old ones first, until the daemon goes away or
-    /// `on_event` returns false. Blocks the calling thread.
+    /// `on_event` returns false. The flag says whether the event happened after subscribing
+    /// (live) rather than being replayed from the log, so a client can notify only on live ones.
+    /// Blocks the calling thread.
     pub fn subscribe(
         after_seq: u64,
-        mut on_event: impl FnMut(crate::schema::Event) -> bool,
+        mut on_event: impl FnMut(crate::schema::Event, bool) -> bool,
     ) -> Result<(), CallError> {
         let params = serde_json::json!({ "after_seq": after_seq });
-        let (mut reader, _) = request("session.subscribe", params)?;
+        let (mut reader, answer) = request("session.subscribe", params)?;
+        let head = answer["head"].as_u64().unwrap_or(0);
         let mut line = String::new();
         loop {
             line.clear();
@@ -282,8 +285,10 @@ mod client {
             }
             let note: super::Notification =
                 serde_json::from_str(&line).map_err(CallError::Decode)?;
-            let event = serde_json::from_value(note.params).map_err(CallError::Decode)?;
-            if !on_event(event) {
+            let event: crate::schema::Event =
+                serde_json::from_value(note.params).map_err(CallError::Decode)?;
+            let live = event.seq > head;
+            if !on_event(event, live) {
                 return Ok(());
             }
         }

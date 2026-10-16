@@ -1,7 +1,7 @@
 //! The window: Plexo's title bar, a workspace sidebar, the selected session's transcript and the
 //! footer strip. Everything shown comes from the daemon; the desktop holds no agent state (§1.1).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -47,6 +47,8 @@ pub struct Shell {
     pub(crate) pr_busy: bool,
     /// A one-off message for the footer, such as the URL of a new pull request.
     pub(crate) notice: Option<String>,
+    /// Notification tags to the workspace each one is about.
+    pub(crate) notified: HashMap<String, String>,
     pub(crate) setup: Option<Setup>,
     /// The first-run checklist opens by itself once, on a daemon with no repositories yet.
     pub(crate) setup_seen: bool,
@@ -81,13 +83,13 @@ impl Shell {
 
         // One thread holds the subscription and reconnects from the last seq it saw. The UI
         // drains it in 16 ms batches, so a chatty agent costs at most one relayout per frame (§5.2).
-        let (tx, mut rx) = mpsc::unbounded::<Event>();
+        let (tx, mut rx) = mpsc::unbounded::<(Event, bool)>();
         std::thread::spawn(move || {
             let mut last = 0;
             while !tx.is_closed() {
-                let _ = local_api::subscribe(last, |event| {
+                let _ = local_api::subscribe(last, |event, live| {
                     last = event.seq;
-                    tx.unbounded_send(event).is_ok()
+                    tx.unbounded_send((event, live)).is_ok()
                 });
                 std::thread::sleep(Duration::from_secs(2));
             }
@@ -108,6 +110,11 @@ impl Shell {
         })
         .detach();
 
+        let shell = cx.weak_entity();
+        cx.on_system_notification_response(move |response, cx| {
+            let _ = shell.update(cx, |this, cx| this.on_notification(response, cx));
+        });
+
         let list = ListState::new(0, ListAlignment::Top, px(400.));
         list.set_follow_mode(FollowMode::Tail);
         let composer = composer_state(window, cx);
@@ -126,6 +133,7 @@ impl Shell {
             viewed: HashSet::new(),
             pr_busy: false,
             notice: None,
+            notified: HashMap::new(),
             setup: None,
             setup_seen: false,
             service: Service::NotBundled,
@@ -163,9 +171,12 @@ impl Shell {
         cx.notify();
     }
 
-    fn apply(&mut self, batch: &[Event], cx: &mut Context<Self>) {
+    fn apply(&mut self, batch: &[(Event, bool)], cx: &mut Context<Self>) {
         let mut dirty: Option<usize> = None;
-        for event in batch {
+        for (event, live) in batch {
+            if *live {
+                self.notify_live(event, cx);
+            }
             if let Some((session, ix)) = self.board.apply(event)
                 && self.shown.as_deref() == Some(session.as_str())
             {
@@ -173,7 +184,7 @@ impl Shell {
             }
         }
         // The diff only changes when the agent finishes an edit or a turn.
-        let edited = batch.iter().any(|e| {
+        let edited = batch.iter().any(|(e, _)| {
             self.shown.as_deref() == Some(e.session_id.as_str())
                 && matches!(
                     e.kind,
