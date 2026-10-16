@@ -110,5 +110,34 @@ and finished the turn normally, 6 seconds later. That matches the SDK docs ("can
 indefinitely"), so the expiry has to come from Swarn, as PRD §2.6 says: 30 minutes by default, then
 an explicit deny logged as `expired`.
 
-Codex: not measured yet. Its approvals go through `codex app-server`, which gets its driver in
-week 4, and this section gets the Codex numbers then.
+Codex: an `item/fileChange/requestApproval` was left unanswered for 20 minutes.
+
+Same result as Claude Code: Codex wrote nothing for the 1,200 seconds the request stayed open, then
+applied the change and completed the turn 5 seconds after it was accepted at 1,212.6 s. Neither CLI
+ever expires an approval, so Swarn's own expiry is the only one.
+
+## 5. Driving Codex through app-server
+
+Measured in week 4 with Codex CLI 0.147.0. `codex app-server generate-ts --out <dir>` writes the
+whole protocol as TypeScript types (642 files), which is the reference the driver follows.
+
+- **Framing:** one JSON object per line, with no `jsonrpc` field. Send `initialize`, wait for its
+  answer, send the `initialized` notification, then `thread/start`.
+- **Policy:** `thread/start` with `sandbox: "read-only"` and `approvalPolicy: "on-request"` asks
+  before every write and before any command that needs more than read access. A file write arrived
+  as `item/fileChange/requestApproval` and waited for the answer.
+- **Approval detail:** the approval request only carries an `itemId`. The file path and diff are in
+  the `item/started` notification that comes just before it, so the driver keeps items by id.
+- **One turn at a time:** `turn/start` returns at once, and the turn ends with `turn/completed`
+  (`completed`, `interrupted` or `failed`). Swarn holds follow-ups until then.
+- **Diffs:** `turn/diff/updated` carries the whole turn's unified diff, which Swarn reduces to a
+  `diff_stat` event.
+- **No cost:** Codex reports token counts but not money, so `usage` has no `cost_usd`. Per PRD §3.2,
+  a missing meter is shown as absent, never as zero.
+- **The configured model can be wrong.** On this machine `~/.codex/config.toml` sets
+  `model = "gpt-6.1-sol"`, which `model/list` doesn't offer. Every turn then fails with "The
+  'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account." Swarn shows that
+  message as the session's error. Onboarding should call `model/list` and offer a model rather than
+  trust the config.
+- **The user's config comes along here too:** Codex loads the user's hooks, skills and MCP servers,
+  and logs MCP start-up failures on stderr. A one-line task used about 20k input tokens.
