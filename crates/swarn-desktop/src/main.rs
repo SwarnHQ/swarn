@@ -89,6 +89,7 @@ fn open_main_window(cx: &mut App) {
         |window, cx| {
             let shell = cx.new(|cx| Shell::new(window, cx));
             // Keyboard actions reach the shell from the start, before anything is clicked.
+            palette::register_handlers(cx, shell.downgrade());
             let focus = shell.read(cx).focus.clone();
             focus.focus(window, cx);
             // gpui-component's Root hosts the overlays its widgets need (menus, popovers).

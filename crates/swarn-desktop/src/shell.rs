@@ -351,8 +351,9 @@ impl Render for Shell {
                 .into_any_element(),
         };
 
-        let root = div().track_focus(&self.focus).key_context("Swarn");
-        self.on_actions(root, cx)
+        div()
+            .track_focus(&self.focus)
+            .key_context("Swarn")
             .size_full()
             .flex()
             .flex_col()

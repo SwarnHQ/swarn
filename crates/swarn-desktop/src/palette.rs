@@ -1,7 +1,7 @@
 //! Keyboard actions and the command palette (§5.4). Every action is a GPUI action with a default
 //! binding, and the palette lists the same actions, so a new one shows up in both places.
 
-use gpui::{Action, App, Context, Div, KeyBinding, Window, actions, prelude::*};
+use gpui::{Action, App, Context, KeyBinding, WeakEntity, Window, actions, prelude::*};
 use gpui_component::WindowExt as _;
 use gpui_component::command::{Command, CommandItem, CommandState};
 
@@ -96,36 +96,56 @@ fn commands() -> Vec<(&'static str, &'static [&'static str], Box<dyn Action>)> {
     ]
 }
 
-impl Shell {
-    /// Hangs every action off the window's root element.
-    pub(crate) fn on_actions(&self, root: Div, cx: &mut Context<Self>) -> Div {
-        root.on_action(
-            cx.listener(|this, _: &CommandPalette, window, cx| this.open_palette(window, cx)),
-        )
-        .on_action(
-            cx.listener(|this, _: &NewWorkspace, window, cx| this.open_new_workspace(window, cx)),
-        )
-        .on_action(cx.listener(|this, _: &AddRepository, _, cx| this.add_repository(cx)))
-        .on_action(cx.listener(|this, _: &ShowTranscript, _, cx| {
-            this.tab = Tab::Transcript;
-            cx.notify();
-        }))
-        .on_action(cx.listener(|this, _: &ShowDiff, _, cx| {
-            this.tab = Tab::Diff;
-            this.fetch_diff(cx);
-            cx.notify();
-        }))
-        .on_action(cx.listener(|this, _: &CreatePullRequest, _, cx| this.create_pr(cx)))
-        .on_action(cx.listener(|this, _: &StopAgent, _, cx| this.stop(cx)))
-        .on_action(cx.listener(|this, _: &OpenSetup, _, cx| this.open_setup(cx)))
-        .on_action(cx.listener(|this, _: &NextWorkspace, _, cx| this.step_workspace(1, cx)))
-        .on_action(cx.listener(|this, _: &PreviousWorkspace, _, cx| this.step_workspace(-1, cx)))
-        .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
-            this.composer
-                .update(cx, |state, cx| state.focus(window, cx));
-        }))
+/// Handles every action at the app level, where all dispatch paths end: key bindings from
+/// anywhere in the window, and the palette, whose overlay sits outside the shell's element tree.
+pub fn register_handlers(cx: &mut App, shell: WeakEntity<Shell>) {
+    fn on<A: Action>(
+        cx: &mut App,
+        shell: &WeakEntity<Shell>,
+        run: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static,
+    ) {
+        let shell = shell.clone();
+        let run = std::rc::Rc::new(run);
+        cx.on_action(move |_: &A, cx| {
+            // Dispatch happens while the window is borrowed, so the work waits until it's free.
+            let (shell, run) = (shell.clone(), run.clone());
+            cx.defer(move |cx| {
+                let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied())
+                else {
+                    return;
+                };
+                let _ = window.update(cx, |_, window, cx| {
+                    let _ = shell.update(cx, |this, cx| run(this, window, cx));
+                });
+            });
+        });
     }
+    on::<CommandPalette>(cx, &shell, |this, window, cx| this.open_palette(window, cx));
+    on::<NewWorkspace>(cx, &shell, |this, window, cx| {
+        this.open_new_workspace(window, cx)
+    });
+    on::<AddRepository>(cx, &shell, |this, _, cx| this.add_repository(cx));
+    on::<ShowTranscript>(cx, &shell, |this, _, cx| {
+        this.tab = Tab::Transcript;
+        cx.notify();
+    });
+    on::<ShowDiff>(cx, &shell, |this, _, cx| {
+        this.tab = Tab::Diff;
+        this.fetch_diff(cx);
+        cx.notify();
+    });
+    on::<CreatePullRequest>(cx, &shell, |this, _, cx| this.create_pr(cx));
+    on::<StopAgent>(cx, &shell, |this, _, cx| this.stop(cx));
+    on::<OpenSetup>(cx, &shell, |this, _, cx| this.open_setup(cx));
+    on::<NextWorkspace>(cx, &shell, |this, _, cx| this.step_workspace(1, cx));
+    on::<PreviousWorkspace>(cx, &shell, |this, _, cx| this.step_workspace(-1, cx));
+    on::<FocusComposer>(cx, &shell, |this, window, cx| {
+        this.composer
+            .update(cx, |state, cx| state.focus(window, cx));
+    });
+}
 
+impl Shell {
     pub(crate) fn step_workspace(&mut self, by: isize, cx: &mut Context<Self>) {
         let ids: Vec<&String> = self.board.workspaces.iter().map(|w| &w.id).collect();
         if ids.is_empty() {
@@ -141,13 +161,16 @@ impl Shell {
         cx.notify();
     }
 
-    /// The palette lives in a dialog outside this view's element tree, so on confirm it closes
-    /// itself and dispatches the chosen action from this view's focus handle.
+    /// Picking an item dispatches its action, which `register_handlers` catches; the palette only
+    /// has to close itself.
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = cx.new(|cx| CommandState::new(window, cx));
-        let focus = self.focus.clone();
+        // The search field only knows it's searchable after its first render, so focus it then;
+        // otherwise typing goes nowhere.
+        let field = state.clone();
+        window
+            .on_next_frame(move |window, cx| field.update(cx, |state, cx| state.focus(window, cx)));
         window.open_dialog(cx, move |dialog, _, _| {
-            let focus = focus.clone();
             let items = commands().into_iter().map(|(label, keywords, action)| {
                 CommandItem::new()
                     .label(label)
@@ -159,12 +182,7 @@ impl Shell {
                     .items(items)
                     .placeholder("Type a command…")
                     .bordered(false)
-                    .on_confirm(move |path, window, cx| {
-                        window.close_dialog(cx);
-                        if let Some((_, _, action)) = commands().into_iter().nth(path.row) {
-                            focus.dispatch_action(&*action, window, cx);
-                        }
-                    }),
+                    .on_confirm(|_, window, cx| window.close_dialog(cx)),
             )
         });
     }

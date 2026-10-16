@@ -211,7 +211,10 @@ fn diff_row(
     viewed: impl Fn(&str) -> bool,
     cx: &mut Context<Shell>,
 ) -> AnyElement {
+    // Full width so each line's colour runs to the edge; long lines are clipped, not wrapped.
     let base = div()
+        .w_full()
+        .overflow_hidden()
         .h(px(ROW_HEIGHT))
         .px(px(GUTTER))
         .flex()

@@ -6,10 +6,10 @@ Swarn starts Claude Code and Codex sessions in their own git worktrees, shows wh
 and sends an end-to-end encrypted push to your iPhone when one of them needs you. You approve, deny
 or reply from the notification, read the diff on the desktop, and open the pull request with `gh`.
 
-> **Status: pre-alpha.** This is week 3 of an eight-week build toward v0.1. The daemon runs Claude
-> Code in git worktrees, and the desktop app shows each session's transcript and lets you approve its
-> tool calls. Starting sessions from the app, Codex and the iPhone app come next. Nothing here is
-> ready for daily use yet.
+> **Status: pre-alpha.** This is week 4 of an eight-week build toward v0.1. The desktop app runs
+> Claude Code and Codex in git worktrees, shows their transcripts and diffs, asks before they write
+> or run anything, notifies you when one needs you, and opens pull requests with `gh`. The iPhone
+> app comes next. Nothing here is ready for daily use yet.
 
 ## How it fits together
 
