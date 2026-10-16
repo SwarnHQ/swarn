@@ -7,6 +7,7 @@ use gpui::{
 };
 use swarn_core::schema::{Decision, Status};
 
+use crate::compose::AGENTS;
 use crate::markdown::{Inline, Md, parse};
 use crate::model::{Approval, Block, ToolState};
 use crate::shell::{GUTTER, Shell, chip};
@@ -32,12 +33,11 @@ impl Shell {
         else {
             return div().into_any_element();
         };
-        let live = self
-            .board
-            .sessions
-            .iter()
-            .find(|s| s.id == shown)
-            .is_some_and(|s| !matches!(s.status, Status::Exited | Status::Failed));
+        let session = self.board.sessions.iter().find(|s| s.id == shown);
+        let live = session.is_some_and(|s| !matches!(s.status, Status::Exited | Status::Failed));
+        let agent = session
+            .and_then(|s| AGENTS.iter().find(|(id, _)| *id == s.agent))
+            .map_or("Agent", |(_, name)| *name);
 
         let body = match block {
             Block::User(text) => div()
@@ -57,7 +57,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(label(&theme, "Claude"))
+                .child(label(&theme, agent))
                 .children(parse(&text).into_iter().map(|md| markdown(&theme, md)))
                 .into_any_element(),
             Block::Tool {

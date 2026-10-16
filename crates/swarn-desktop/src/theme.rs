@@ -124,12 +124,44 @@ impl Theme {
         }
     }
 
-    /// Follows the system appearance, as Plexo does by default.
-    pub fn sync(window: &Window, cx: &mut App) {
-        cx.set_global(match window.appearance() {
-            WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
-            WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),
-        });
+    /// Follows the system appearance, as Plexo does by default, and points gpui-component's
+    /// widgets (text inputs so far) at the same palette and fonts.
+    pub fn sync(window: &mut Window, cx: &mut App) {
+        let dark = matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        );
+        let theme = if dark { Self::dark() } else { Self::light() };
+        cx.set_global(theme);
+
+        use gpui_component::{Theme as Ui, ThemeMode};
+        Ui::change(
+            if dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
+            Some(window),
+            cx,
+        );
+        let ui = Ui::global_mut(cx);
+        ui.font_family = SANS.into();
+        ui.mono_font_family = MONO.into();
+        ui.radius = px(RADIUS);
+        let hsla = |c: Rgba| -> gpui::Hsla { c.into() };
+        let c = &mut ui.colors;
+        c.background = hsla(theme.input_bg);
+        c.foreground = hsla(theme.text);
+        c.muted_foreground = hsla(theme.text_tertiary);
+        c.border = hsla(theme.border);
+        c.input = hsla(theme.border_strong);
+        c.ring = hsla(theme.accent);
+        c.caret = hsla(theme.accent);
+        c.selection = hsla(theme.accent).opacity(0.3);
+        c.popover = hsla(theme.bg_secondary);
+        c.popover_foreground = hsla(theme.text);
+        c.accent = hsla(theme.track_bg);
+        c.accent_foreground = hsla(theme.text);
     }
 
     pub fn get(cx: &App) -> &Self {

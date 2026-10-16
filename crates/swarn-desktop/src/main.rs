@@ -1,3 +1,4 @@
+mod compose;
 mod markdown;
 mod model;
 mod shell;
@@ -36,6 +37,7 @@ fn main() {
         cx.text_system()
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
             .expect("bundled fonts load");
+        gpui_component::init(cx);
 
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &CloseWindow, cx| {
@@ -75,7 +77,11 @@ fn open_main_window(cx: &mut App) {
             app_owns_titlebar_drag: true,
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| Shell::new(window, cx)),
+        |window, cx| {
+            let shell = cx.new(|cx| Shell::new(window, cx));
+            // gpui-component's Root hosts the overlays its widgets need (menus, popovers).
+            cx.new(|cx| gpui_component::Root::new(shell, window, cx))
+        },
     )
     .expect("main window opens");
 }

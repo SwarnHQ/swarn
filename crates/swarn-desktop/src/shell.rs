@@ -6,13 +6,16 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
-    AnyElement, Context, FollowMode, FontWeight, ListAlignment, ListState, MouseButton,
+    AnyElement, Context, Entity, FollowMode, FontWeight, ListAlignment, ListState, MouseButton,
     SharedString, Window, div, list, prelude::*, px,
 };
 use serde_json::{Value, json};
 use swarn_core::local_api::{self, DaemonInfo};
 use swarn_core::schema::{Decision, Event, Repo, Session, Status, Workspace};
 
+use gpui_component::input::TextareaState;
+
+use crate::compose::{AGENTS, NewWorkspace, composer_state};
 use crate::model::Board;
 use crate::theme::{HAIRLINE, MONO, SANS, TITLE_BAR_HEIGHT, Theme, label};
 
@@ -24,11 +27,15 @@ pub struct Shell {
     pub(crate) board: Board,
     /// `None` until the first poll answers.
     online: Option<bool>,
-    selected: Option<String>,
+    pub(crate) selected: Option<String>,
     /// The transcript list and the session it currently shows.
     pub(crate) list: ListState,
     pub(crate) shown: Option<String>,
-    last_error: Option<String>,
+    pub(crate) last_error: Option<String>,
+    pub(crate) composer: Entity<TextareaState>,
+    /// The agent a new session starts with.
+    pub(crate) agent: &'static str,
+    pub(crate) form: Option<NewWorkspace>,
 }
 
 impl Shell {
@@ -87,6 +94,7 @@ impl Shell {
 
         let list = ListState::new(0, ListAlignment::Top, px(400.));
         list.set_follow_mode(FollowMode::Tail);
+        let composer = composer_state(window, cx);
         Self {
             board: Board::default(),
             online: None,
@@ -94,7 +102,19 @@ impl Shell {
             list,
             shown: None,
             last_error: None,
+            composer,
+            agent: AGENTS[0].0,
+            form: None,
         }
+    }
+
+    /// Re-reads the lists now instead of at the next poll, after something this window changed.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let lists = cx.background_executor().spawn(async { fetch() }).await;
+            let _ = this.update(cx, |this, cx| this.set_lists(lists, cx));
+        })
+        .detach();
     }
 
     fn set_lists(&mut self, lists: Option<Lists>, cx: &mut Context<Self>) {
@@ -213,13 +233,20 @@ impl Render for Shell {
                 &theme,
                 "Daemon not running",
                 "Start it, and this window connects on its own:",
-                "cargo run -p swarn-daemon",
+                Some("cargo run -p swarn-daemon"),
+            ),
+            _ if self.form.is_some() => self.new_workspace_form(&theme, cx),
+            (Some(true), None, _) if self.board.repos.is_empty() => empty_state(
+                &theme,
+                "No repositories yet",
+                "Add one from the sidebar to get started.",
+                None,
             ),
             (Some(true), None, _) => empty_state(
                 &theme,
                 "No workspaces yet",
-                "Create one from a terminal:",
-                r#"swarnd call workspace.create '{"repo_id":"…","name":"first-task"}'"#,
+                "Create one from the sidebar. Each gets its own worktree and branch.",
+                None,
             ),
             (Some(true), Some(ws), None) => div()
                 .flex_1()
@@ -229,9 +256,10 @@ impl Render for Shell {
                 .child(empty_state(
                     &theme,
                     "No session yet",
-                    "Start one from a terminal:",
-                    "swarnd call session.start '{\"workspace_id\":\"…\",\"prompt\":\"…\"}'",
+                    "Pick an agent and describe the task below.",
+                    None,
                 ))
+                .child(self.composer(&theme, &ws.id, cx))
                 .into_any_element(),
             (Some(true), Some(ws), Some(s)) => div()
                 .flex_1()
@@ -247,6 +275,7 @@ impl Render for Shell {
                     .flex_1()
                     .pb(px(12.)),
                 )
+                .child(self.composer(&theme, &ws.id, cx))
                 .into_any_element(),
         };
 
@@ -363,8 +392,43 @@ impl Shell {
                 );
             }
         }
-        column
+        column.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .mt(px(12.))
+                .mx(px(8.))
+                .child(
+                    sidebar_action(theme, "new-workspace", "+  New workspace").on_click(
+                        cx.listener(|this, _, window, cx| this.open_new_workspace(window, cx)),
+                    ),
+                )
+                .child(
+                    sidebar_action(theme, "add-repo", "Add repository…")
+                        .on_click(cx.listener(|this, _, _, cx| this.add_repository(cx))),
+                ),
+        )
     }
+}
+
+/// Plexo's accent text action ("Browse…"), as a sidebar row.
+fn sidebar_action(
+    theme: &Theme,
+    id: &'static str,
+    text: &'static str,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .px(px(8.))
+        .py(px(6.))
+        .rounded(px(6.))
+        .font_family(MONO)
+        .text_size(px(11.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.accent)
+        .hover(|s| s.bg(theme.border_subtle))
+        .child(text)
 }
 
 pub fn status_word(status: Option<Status>) -> &'static str {
@@ -473,7 +537,7 @@ fn empty_state(
     theme: &Theme,
     title: &'static str,
     hint: &'static str,
-    command: &'static str,
+    command: Option<&'static str>,
 ) -> AnyElement {
     div()
         .flex_1()
@@ -494,20 +558,22 @@ fn empty_state(
                 .text_color(theme.text_secondary)
                 .child(hint),
         )
-        .child(
-            div()
-                .mt(px(4.))
-                .px(px(10.))
-                .py(px(6.))
-                .rounded(px(6.))
-                .border(px(HAIRLINE))
-                .border_color(theme.border)
-                .bg(theme.input_bg)
-                .font_family(MONO)
-                .text_size(px(11.5))
-                .text_color(theme.text_secondary)
-                .child(command),
-        )
+        .when_some(command, |d, command| {
+            d.child(
+                div()
+                    .mt(px(4.))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .border(px(HAIRLINE))
+                    .border_color(theme.border)
+                    .bg(theme.input_bg)
+                    .font_family(MONO)
+                    .text_size(px(11.5))
+                    .text_color(theme.text_secondary)
+                    .child(command),
+            )
+        })
         .into_any_element()
 }
 
