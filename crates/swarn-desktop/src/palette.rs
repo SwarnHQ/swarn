@@ -126,7 +126,7 @@ impl Shell {
         }))
     }
 
-    fn step_workspace(&mut self, by: isize, cx: &mut Context<Self>) {
+    pub(crate) fn step_workspace(&mut self, by: isize, cx: &mut Context<Self>) {
         let ids: Vec<&String> = self.board.workspaces.iter().map(|w| &w.id).collect();
         if ids.is_empty() {
             return;

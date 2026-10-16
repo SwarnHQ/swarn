@@ -120,6 +120,9 @@ impl Shell {
         let list = ListState::new(0, ListAlignment::Top, px(400.));
         list.set_follow_mode(FollowMode::Tail);
         let composer = composer_state(window, cx);
+        if crate::bench::enabled() {
+            crate::bench::start(window, cx);
+        }
         Self {
             board: Board::default(),
             online: None,
@@ -164,6 +167,9 @@ impl Shell {
         {
             self.setup_seen = true;
             self.open_setup(cx);
+        }
+        if lists.is_some() {
+            crate::bench::connected();
         }
         if let Some(lists) = lists {
             self.board.info = Some(lists.info);

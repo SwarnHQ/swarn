@@ -1,3 +1,4 @@
+mod bench;
 mod compose;
 mod diff;
 mod markdown;
@@ -32,6 +33,7 @@ const FONTS: [&[u8]; 7] = [
 ];
 
 fn main() {
+    bench::launched();
     let app = gpui_platform::application();
     // macOS keeps the app alive with no windows; a Dock click brings the window back.
     app.on_reopen(|cx| {
