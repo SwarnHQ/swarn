@@ -45,6 +45,8 @@ pub struct Approval {
     /// `allow_once`, `allow_session` or `deny` once answered.
     pub decision: Option<String>,
     pub reason: Option<String>,
+    /// Who answered: "local" for this Mac, else a paired device's id.
+    pub by: Option<String>,
 }
 
 #[derive(Default)]
@@ -108,6 +110,7 @@ impl Transcript {
                 detail: detail(&p["detail"]),
                 decision: None,
                 reason: None,
+                by: None,
             })),
             // A refused attempt (bad signature, expired…) leaves the request open.
             EventKind::PermissionResolved if p["rejected"] == true => None,
@@ -120,6 +123,7 @@ impl Transcript {
                 if let Block::Approval(a) = &mut self.blocks[ix] {
                     a.decision = Some(text(&p["decision"]));
                     a.reason = p["reason"].as_str().map(str::to_owned);
+                    a.by = p["device_id"].as_str().map(str::to_owned);
                 }
                 Some(ix)
             }

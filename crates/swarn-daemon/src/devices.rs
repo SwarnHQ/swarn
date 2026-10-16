@@ -92,7 +92,12 @@ impl Devices {
         windows.retain(|_, expiry| *expiry > Instant::now());
         windows.insert(pw.clone(), Instant::now() + PAIR_WINDOW);
         drop(windows);
-        let c = B64.encode(serde_json::to_vec(candidates).unwrap_or_default());
+        // Compact on purpose: every byte makes the QR code denser and harder to scan.
+        let c = candidates
+            .iter()
+            .map(|c| format!("{}~{}~{}", c.kind, c.host, c.port))
+            .collect::<Vec<_>>()
+            .join(",");
         let url = format!(
             "swarn://pair?v=1&m={}&n={}&sk={}&vk={}&pw={}&c={}&g={}",
             self.info.machine_id,
@@ -100,7 +105,7 @@ impl Devices {
             B64.encode(self.identity.x25519_public),
             B64.encode(self.identity.signing.public()),
             pw,
-            c,
+            percent(&c),
             percent(gateway),
         );
         json!({ "url": url, "expires_in_secs": PAIR_WINDOW.as_secs(), "candidates": candidates })

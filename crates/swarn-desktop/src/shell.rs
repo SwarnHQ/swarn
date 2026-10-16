@@ -52,6 +52,8 @@ pub struct Shell {
     /// The root's focus, so keyboard actions reach this view when nothing inside has focus.
     pub(crate) focus: FocusHandle,
     pub(crate) setup: Option<Setup>,
+    pub(crate) devices: Vec<serde_json::Value>,
+    pub(crate) pairing: Option<crate::pairing::Pairing>,
     /// The first-run checklist opens by itself once, on a daemon with no repositories yet.
     pub(crate) setup_seen: bool,
     /// Whether the background helper is registered; checked while the daemon is unreachable.
@@ -141,6 +143,8 @@ impl Shell {
             notified: HashMap::new(),
             focus: cx.focus_handle(),
             setup: None,
+            devices: Vec::new(),
+            pairing: None,
             setup_seen: false,
             service: Service::NotBundled,
         }
@@ -176,6 +180,7 @@ impl Shell {
             self.board.repos = lists.repos;
             self.board.workspaces = lists.workspaces;
             self.board.sessions = lists.sessions;
+            self.devices = lists.devices;
         }
         cx.notify();
     }
@@ -262,6 +267,7 @@ struct Lists {
     repos: Vec<Repo>,
     workspaces: Vec<Workspace>,
     sessions: Vec<Session>,
+    devices: Vec<serde_json::Value>,
 }
 
 fn fetch() -> Option<Lists> {
@@ -270,6 +276,8 @@ fn fetch() -> Option<Lists> {
         repos: local_api::call("repo.list", json!({})).ok()?,
         workspaces: local_api::call("workspace.list", json!({})).ok()?,
         sessions: local_api::call("session.list", json!({})).ok()?,
+        // An older daemon without devices still works.
+        devices: local_api::call("device.list", json!({})).unwrap_or_default(),
     })
 }
 

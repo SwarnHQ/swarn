@@ -4,6 +4,7 @@ mod diff;
 mod markdown;
 mod model;
 mod notify;
+mod pairing;
 mod palette;
 mod review;
 mod service;
