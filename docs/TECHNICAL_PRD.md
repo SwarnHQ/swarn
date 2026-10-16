@@ -2,18 +2,20 @@
 
 Companion to the product PRD. That document says what Swarn does and why; this one says how it is built, in enough detail that an implementer (human or agent) can start writing code without inventing decisions. Where the two disagree, the product PRD wins on scope and this one wins on mechanism.
 
-Date: 15 Oct 2026. Owner: Sebastien, solo, working with coding agents.
+Date: 15 Oct 2026, revised 16 Oct 2026. Owner: Sebastien, solo, working with coding agents.
+
+The 16 Oct revision follows the competitor research in `docs/research/competitor-onboarding.md`. It replaces the ACP adapters with direct drivers for each CLI (§4.2), adds the first-run flow (§5.5), resolves open item 4, and moves the worktree and GitHub details closer to what shipping tools learned the hard way.
 
 ## 0. Scope of record for v0.1
 
 The product PRD lists more than one person can build in eight weeks. Four cuts apply, and the rest of this document assumes them:
 
-1. No native terminal in v0.1. The MVP loop runs on ACP agents only (Claude Code, Codex). The `alacritty_terminal` grid and PTY tier move to v0.2.
+1. No native terminal in v0.1. The MVP loop runs on Claude Code and Codex only, each driven through its own structured interface (§4.2). The `alacritty_terminal` grid, the PTY tier and the generic ACP tier for other agents move to v0.2.
 2. No tree-sitter in v0.1. Diffs render as monospace text with added/removed colouring. Syntax highlighting moves to v0.2.
 3. No Android in v0.1. macOS desktop plus iOS. Android lands in v0.2 on the same Rust core.
 4. No design system of our own in v0.1. The desktop copies Plexo's look (github.com/anmolkapil/plexo, MIT): its palette, Manrope and Roboto Mono, and its window chrome, ported to GPUI in `swarn-desktop/src/theme.rs`. Changed 16 Oct 2026; this replaces the earlier plan of `gpui-component` defaults with a stock Zed theme.
 
-What that leaves: start ACP agents in git worktrees on a Mac, watch their status, get an encrypted push on an iPhone when one needs a human, approve or deny or reply from the notification, read the diff on the desktop, open a PR through `gh`.
+What that leaves: start Claude Code and Codex agents in git worktrees on a Mac, watch their status, get an encrypted push on an iPhone when one needs a human, approve or deny or reply from the notification, read the diff on the desktop, open a PR through `gh`.
 
 Everything below marked v0.2+ is designed for but not built in the first eight weeks. The protocol and schema are designed once, with the relay in mind, because retrofitting a transport is expensive and designing for one is not.
 
@@ -72,7 +74,7 @@ swarn/
   Cargo.toml                  # workspace
   crates/
     swarn-core/               # types, session schema, HPKE envelopes, pairing, Transport
-    swarn-daemon/             # tokio runtime, ACP adapters, worktrees, SQLite, local API
+    swarn-daemon/             # tokio runtime, agent drivers, worktrees, SQLite, local API
     swarn-desktop/            # GPUI app, binary target `swarn`
     swarn-mobile/             # UniFFI wrapper over swarn-core + local cache
     swarn-bench/              # perf harness, simulated agents
@@ -101,7 +103,7 @@ The Zed license audit is a release blocker, so the allowlist is explicit and sma
 | Ed25519 | `ed25519-dalek` | BSD-3 |
 | SQLite | `rusqlite` (bundled) | MIT |
 | Git | `git2` | MIT/Apache-2.0 |
-| ACP | `agent-client-protocol` | Apache-2.0 |
+| ACP (v0.2 generic tier) | `agent-client-protocol` | Apache-2.0 |
 | mDNS | `mdns-sd` | MIT/Apache-2.0 |
 | FFI | `uniffi` | MPL-2.0 |
 
@@ -173,7 +175,7 @@ Device to daemon:
 | `subscribe` | `scope` (`all` or session ids), `after_seq` | after_seq 0 means send a snapshot |
 | `prompt` | `session_id`, `text`, `attachments[]` | follow-up into a running session |
 | `approve` / `deny` | see 2.6 | signed separately from the envelope |
-| `cancel` | `session_id` | sends ACP cancel or SIGINT |
+| `cancel` | `session_id` | sends the driver's interrupt, then SIGINT |
 | `create_workspace` | `repo_id`, `base_ref`, `prompt`, `agent` | v0.2 from the phone; daemon supports it in v0.1 for the desktop |
 | `ack` | `through_seq` | lets the relay drop mailbox frames in v0.2 |
 
@@ -259,7 +261,11 @@ Signing input is the UTF-8 concatenation, with 0x1F separators, of: `swarn/appro
 
 The daemon rejects an approval if any of these hold: unknown `request_id`, `nonce` mismatch, signature invalid for that device's stored P-256 key, `request_id` already resolved, `signed_at` more than 60 seconds in the future, or `expires_at` already passed. Every acceptance and rejection is appended to the event log as `permission_resolved` with the decision, device id, and reason on rejection.
 
-Expiry comes from the agent CLI, not from us. Week 1 measures what each CLI does with a prompt left pending for 1, 10 and 60 minutes, and `expires_at` is set from the measured timeout minus a 20 percent safety margin. If a CLI never times out, the default is 30 minutes so a notification cannot sit on a lock screen for a day pretending to be live.
+Expiry is ours, not the CLI's. Neither CLI times a pending approval out: the Claude Agent SDK's `canUseTool` "can stay pending indefinitely", Claude Remote Control keeps prompts open until answered, and ACP specifies no timeout (sources in `docs/research/competitor-onboarding.md` §3.12–3.14). So `expires_at` is `default_expiry_secs` from the policy, 30 minutes unless changed, which keeps a notification from sitting on a lock screen for a day pretending to be live. Week 2 still confirms the "never times out" behaviour against the real CLIs.
+
+When a request expires, the daemon answers the agent with an explicit deny and logs `permission_resolved` with reason `expired`, never as a user decision. Conductor shipped the bug where timeouts were "reported as user denials" (0.83.0); the event log has to tell the two apart.
+
+A text reply that arrives while a permission is pending does not resolve or cancel the request. The daemon holds the text and delivers it after the request resolves. Happy lost pending requests this way (#1735).
 
 An approval tapped after expiry is not sent. The extension detects it locally against `expires_at` and shows "Expired, open the app".
 
@@ -343,10 +349,10 @@ CREATE TABLE session (
   id            TEXT PRIMARY KEY,
   workspace_id  TEXT NOT NULL REFERENCES workspace(id),
   agent         TEXT NOT NULL,     -- claude-code|codex|custom
-  tier          TEXT NOT NULL,     -- acp|pty
+  tier          TEXT NOT NULL,     -- native|acp|pty (acp and pty from v0.2)
   status        TEXT NOT NULL,     -- starting|working|needs_input|done|failed|exited
   pid           INTEGER,
-  acp_session   TEXT,              -- agent-side session id for resume
+  acp_session   TEXT,              -- agent-side session or thread id for resume
   started_at    TEXT NOT NULL,
   ended_at      TEXT,
   last_change_at TEXT NOT NULL
@@ -435,7 +441,7 @@ main
 ├── device_listener  : TcpListener + WebSocket, one task per device connection
 ├── mdns             : registration and refresh
 ├── session_manager  : owns the session table, spawns per-session tasks
-│   └── session/N    : ACP client, stdout/stderr pump, status derivation
+│   └── session/N    : agent driver, stdout/stderr pump, status derivation
 ├── event_writer     : single writer to SQLite, batched 50 ms, broadcasts to subscribers
 ├── push_sender      : queue to the gateway, retries with backoff
 ├── address_watcher  : network change notifications, pushes `addresses`
@@ -446,22 +452,37 @@ One writer task for SQLite. Multiple writers to the same SQLite file in WAL mode
 
 Ceiling: one global event writer caps throughput at a few thousand events per second, far above ten streaming agents. Shard by workspace if that ever shows up in a profile.
 
-### 4.2 ACP adapters
+### 4.2 Agent drivers
 
-Claude Code and Codex both speak ACP through existing adapters, so this is wiring rather than protocol work. The daemon spawns the adapter as a child process, speaks ACP over its stdio, and maps notifications onto Swarn events.
+v0.1 drives each CLI directly from Rust, through the interface its vendor publishes for other programs. There is no adapter process and no Node runtime in between.
 
-| ACP | Swarn event | Status effect |
+| Agent | Process | Protocol |
 | --- | --- | --- |
-| `session/new` response | `session_started` | `working` |
-| `session/update` with `agent_message_chunk` | `agent_message_delta` | `working` |
-| `session/update` with `agent_thought_chunk` | `thought_delta` | `working` |
-| `session/update` with `tool_call` | `tool_call` | `working` |
-| `session/update` with `tool_call_update` | `tool_call_update` | `working` |
-| `session/update` with `plan` | `plan` | `working` |
-| `session/request_permission` | `permission_request` | `needs_input` |
-| `session/prompt` returns `end_turn` | `agent_message_end` | `done` |
-| `session/prompt` returns `cancelled` | `session_ended` | `exited` |
-| process exit, non-zero | `error`, `session_ended` | `failed` |
+| Claude Code | the user's `claude`, unmodified: `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio --permission-mode default` | newline-delimited JSON on stdio; permission prompts arrive as `control_request` messages of subtype `can_use_tool` and are answered with a `control_response`; `--resume <session_id>` continues a session |
+| Codex | the user's `codex app-server` | JSON-RPC over stdio JSONL; `thread/start` and `turn/start` drive a session; approvals arrive as server requests such as `item/commandExecution/requestApproval`, answered with `accept`, `acceptForSession`, `decline` or `cancel` |
+
+Why not the ACP adapters the first draft named. They have moved and changed shape: `zed-industries/codex-acp` is archived, and its replacement is a Node 22 package that itself wraps `codex app-server`. `@agentclientprotocol/claude-agent-acp` embeds its own pinned SDK and CLI, so it cannot drive the user's installed `claude`, and JetBrains documents that a Claude agent added through ACP cannot run on a Free, Pro or Max subscription. The tools that work well drive the vendor interfaces directly: Vibe Kanban and Sculptor use `claude -p` with stream-json, and Happy, Nimbalyst and Vibe Kanban use `codex app-server`. Driving them ourselves costs two small JSON protocols instead of one, removes Node from the install, and keeps Anthropic's auth policy simple: the end user signs in to the unmodified Claude Code binary themselves, which the policy explicitly allows. Evidence for all of this is in `docs/research/competitor-onboarding.md` §1, §3.12–3.14 and §4.2. ACP comes back in v0.2 as the generic tier for agents without their own interface (Gemini, Copilot and others).
+
+Binaries are the user's own, found through the captured login-shell `PATH` (§5.5). Swarn does not bundle Claude Code: shipping it inside a product requires Anthropic's Commercial Terms. The daemon records each CLI's version per session and warns, without refusing, when a version has no recorded contract transcript (§9.2).
+
+The permission mode is always passed explicitly. Without one, the Claude SDK's default "can be auto mode", and auto-approved calls never reach Swarn. Codex gets an approval policy per thread from Swarn's policy file rather than inheriting the user's `config.toml`; the old `approval_policy = "untrusted"` value is retired and can stop a client from starting.
+
+Mapping onto Swarn events. Exact message and method names are pinned by the recorded transcripts in §9.2, not by this table:
+
+| Swarn event | Claude Code (stream-json) | Codex (app-server) | Status effect |
+| --- | --- | --- | --- |
+| `session_started` | `system` message, subtype `init` | `thread/start` response | `working` |
+| `agent_message_delta` | `stream_event` text delta | agent message delta notification | `working` |
+| `thought_delta` | `stream_event` thinking delta | reasoning delta notification | `working` |
+| `tool_call` | `tool_use` block in an `assistant` message | `item/started` for a command, file change or tool item | `working` |
+| `tool_call_update` | `tool_result` block in a `user` message | `item/completed` | `working` |
+| `plan` | `TodoWrite` tool call | plan update notification | `working` |
+| `permission_request` | `control_request`, subtype `can_use_tool` | `item/*/requestApproval` server request | `needs_input` |
+| `permission_resolved` | our `control_response` | our reply to the server request | `working` |
+| `usage` | `result` message usage and cost | token usage notification | unchanged |
+| `agent_message_end` | `result` message, subtype `success` | `turn/completed` | `done` |
+| `session_ended` | process exit after an interrupt | `turn/interrupt` completed | `exited` |
+| `error`, `session_ended` | non-zero exit or an error `result` | non-zero exit or error notification | `failed` |
 
 Status is derived in exactly one place, a pure function over the last event and the current status, which means it is unit-testable without a child process:
 
@@ -469,7 +490,9 @@ Status is derived in exactly one place, a pure function over the last event and 
 pub fn next_status(current: Status, ev: &EventKind) -> Status
 ```
 
-Permission requests are the interesting path. The adapter blocks on `session/request_permission` until the daemon answers, so the daemon writes the `permission_request` event, fires a push, and holds the ACP response until an approval arrives, the request expires, or the session is cancelled. Nothing about this is polled; it is a oneshot channel per request.
+Permission requests are the interesting path. The agent blocks until the daemon answers, so the daemon writes the `permission_request` event, fires a push, and holds the reply until an approval arrives, the request expires, or the session is cancelled. Nothing about this is polled; it is a oneshot channel per request.
+
+Two risks to watch. Claude's headless docs say `--bare`, which skips OAuth and the Keychain and needs an API key, "will become the default for -p in a future release"; if that lands, subscription users need a flag to opt out or the Agent SDK path, and the contract tests will catch the change. And agents spawned by a background process have failed to authenticate because they could not reach the macOS Keychain (codex-acp #310, claude-agent-acp #548), which is why week 2 starts with that test under launchd.
 
 v0.2 adds the PTY tier. Status for those sessions comes only from agent hooks (Claude Code `Notification` and `Stop`, Codex `notify`), delivered by the hook shelling out to `swarn hook ...` which writes to the Unix socket. No prompt-pattern heuristics. A CLI with no hooks shows `running` or `exited` and nothing more, and the status board says so rather than guessing.
 
@@ -480,15 +503,20 @@ Creating a workspace has to be transactional in the sense that matters: a failur
 ```
 1. INSERT workspace (state='creating')
 2. git worktree add -b <branch> <path> <base_ref>        # git2, falling back to the git CLI
-3. run the repo setup script with cwd=<path>, 10 min timeout, output to the event log
+3. copy gitignored files matching .worktreeinclude (default: .env*) from the repo root
 4. UPDATE workspace SET state='ready'
+5. run the repo setup script with cwd=<path>, 10 min timeout, output to the event log
 ```
 
-Any failure sets `state='failed'` with the error in the log and leaves the directory in place. Archiving runs `git worktree remove`, then `git branch -D` only if the branch is merged or the user confirms, then deletes `refs/swarn/<workspace>` (v0.4 checkpoints).
+Worktrees live outside the repo, under `~/Library/Application Support/swarn/worktrees/<repo>/<workspace>`. Nested worktrees confuse tooling that walks up the tree (Crystal #152), and Conductor moved away from them.
+
+Step 3 copies files that git ignores but the app needs, mostly `.env` files. Almost every competitor ended up doing this after users asked repeatedly (Crystal #39, Claude Squad #260). `.worktreeinclude` uses gitignore syntax and is the same file Claude Code reads, so one file serves both.
+
+A failure in steps 1 to 3 sets `state='failed'` with the error in the log and leaves the directory in place. A failing setup script does not: the workspace stays `ready`, the failure is an `error` event on the workspace, and the user can still send the first prompt, as Conductor does since 0.57.0. Repos also get an optional run script and archive script next to the setup script. Archiving runs `git worktree remove`, then `git branch -D` only if the branch is merged or the user confirms, then deletes `refs/swarn/<workspace>` (v0.4 checkpoints).
 
 `git2` does not cover every worktree operation cleanly, so the daemon shells out to `git` for `worktree add` and `worktree remove` and uses `git2` for diffs and status. Mixing them is a known inelegance and cheaper than either alternative. Revisit `gitoxide` after v0.5.
 
-Port allocation for setup scripts: the daemon picks a free port per workspace from a configurable range (default 31000-31999), exports it as `SWARN_PORT`, and records it. Dev servers are not reachable from the phone before v0.5.
+Port allocation for setup and run scripts: the daemon gives each workspace a block of 10 free ports from a configurable range (default 31000-31999, so 100 workspaces), exports the first as `SWARN_PORT`, and records the block. Conductor and Emdash both settled on 10 because apps often need a second port. Dev servers are not reachable from the phone before v0.5.
 
 ### 4.4 Local API
 
@@ -498,7 +526,7 @@ JSON-RPC 2.0 over `~/Library/Application Support/swarn/daemon.sock`, mode 0600. 
 
 `session.subscribe` upgrades the connection to a server-push stream of the same `event` messages the phone gets, minus the envelope. The desktop uses this and nothing else for live state, which keeps one code path for "apply an event to the UI model" across both clients.
 
-`pr.create` shells out to `gh pr create`. The daemon preflights `gh --version` and `gh auth status` at startup and surfaces a specific error ("GitHub CLI not signed in, run gh auth login") rather than a failed subprocess. We are not reimplementing GitHub's API for v0.1; `gh` is already installed on the target user's machine and already holds their token.
+`pr.create` shells out to `gh pr create`. We are not reimplementing GitHub's API for v0.1; `gh` is already installed on the target user's machine and already holds their token. The daemon checks `gh --version` and `gh auth status` during onboarding (§5.5) and again before each PR, and surfaces a specific error ("GitHub CLI not signed in, run gh auth login") rather than a failed subprocess. It also checks that git runs at all, because an unaccepted Xcode license breaks git and `gh` silently, which Conductor hit (0.36.7). `GH_TOKEN` in the daemon's environment is accepted as a fallback, as Conductor added in 0.25.5, because detecting `gh` auth was its most fragile onboarding step.
 
 ## 5. Desktop
 
@@ -541,6 +569,23 @@ Markdown rendering in v0.1 is deliberately shallow: paragraphs, code fences, lis
 ### 5.4 Keyboard
 
 Every action is a GPUI action with a default binding, declared in one `keymap.json` shipped with the app and overridable from `~/.config/swarn/keymap.json`. The command palette is fuzzy search over the action registry, so a new action appears in the palette without being registered twice.
+
+### 5.5 First run
+
+The first launch is a short checklist, one screen per step. Every step can be re-run later from settings, and only step 1 is required. The order follows `docs/research/competitor-onboarding.md` §4.1, where each step is tied to the evidence behind it.
+
+1. Register the daemon. `swarnd` ships inside the app bundle, and the app registers it as a per-user launch agent through `SMAppService`, so the user sees one Login Items approval and never opens a terminal. This answers the old open item 4 with a single code path. `swarnd install` stays for headless machines. Of the competitors, only Omnara registers a per-user launchd service cleanly; Conductor has no helper and loses local sessions when it quits.
+2. Capture the environment. A launch agent gets a minimal `PATH` and no login shell, so the daemon runs the user's login shell once (`$SHELL -l -i -c env`, 5 second timeout), stores the result, and shows which tools it found. Superset broke when agent CLIs were only on the `.zshrc` `PATH` (#7398).
+3. Check git and GitHub: git runs (the Xcode license check from §4.4), `gh` is installed and signed in, or `GH_TOKEN` is set. GitHub is skippable until the first PR.
+4. Find and sign in to each agent, one card per agent, each skippable. The checks run inside `swarnd`, not the app, because the app's environment is not the one agents will run in: `claude auth status` and `codex login status`. To sign in, Swarn opens a terminal running `claude /login` or `codex login` and polls the status. Swarn never shows its own Claude login and never reads the token, per Anthropic's policy. A set `ANTHROPIC_API_KEY` gets a warning, because it silently overrides the subscription.
+5. Add a repository: pick a local folder (`repo.add`). Cloning comes later.
+6. Configure the repository: setup, run and archive scripts, and the `.worktreeinclude` patterns, prefilled with `.env*`.
+7. Choose the approval policy. Three choices, defaulting to "ask me before writes and commands". The result goes to `~/.config/swarn/policy.toml`. Most competitors skip permissions by default; asking a human first is the point of Swarn, so it is the default here.
+8. Ask for macOS notification permission, and explain the Files and Folders prompts that will name Swarn when an agent touches Desktop or Downloads.
+9. Offer keep-awake. While any session is `working` or `needs_input`, the daemon holds an IOKit power assertion against idle sleep (the fix for review item 1). The screen says plainly that a closed lid on battery still sleeps, and that the phone gets nothing while the Mac is asleep (§1.3).
+10. Pair a phone, optional. Before the QR appears, the Mac side says whether it found Tailscale or will be LAN-only, since v0.1 has no relay. The phone asks for camera, Local Network and notification permission during pairing, in that order (§2.5, §2.7).
+11. Send a test approval end to end: a fake permission request from `swarnd`, through the push gateway, approved on the phone, back to the daemon. The top complaints about competitors' phone apps are pushes that never arrive and pairing that fails silently, so onboarding proves the path works before the user depends on it.
+12. Start the first workspace from a prompt box.
 
 ## 6. Mobile
 
@@ -660,12 +705,12 @@ Eight weeks, one builder, agents doing most of the typing. The order is chosen s
 
 | Week | Deliverable | Done when |
 | --- | --- | --- |
-| 1 | `swarn-core` types and session schema; daemon skeleton with SQLite and the local API; GPUI hello-window with `gpui-component`; Zed crate license audit; measure CLI permission timeouts | A GPUI window renders a list from the daemon over the Unix socket; audit written to `docs/licenses.md`; timeout numbers in `docs/cli-behaviour.md` |
-| 2 | Worktree lifecycle; ACP adapter for Claude Code; status derivation; event log and subscribe stream | `swarn workspace create` then `session start` produces a live transcript in the terminal client |
+| 1 | `swarn-core` types and session schema; daemon skeleton with SQLite and the local API; GPUI hello-window; Zed crate license audit (done 16 Oct; the CLI timeout measurement moved to the week 2 spike) | A GPUI window renders a list from the daemon over the Unix socket; audit written to `docs/licenses.md` |
+| 2 | Spike first: `claude auth status` and `codex login status` from `swarnd` running under launchd, plus login-shell environment capture, and confirm neither CLI times out a pending approval. Then the worktree lifecycle with `.worktreeinclude`; the Claude Code stream-json driver; status derivation; event log and subscribe stream | Spike results in `docs/cli-behaviour.md`; `swarn workspace create` then `session start` produces a live transcript in the terminal client |
 | 3 | GPUI sidebar, transcript view with virtualization and streaming markdown, inline approval card | Approving from the desktop unblocks a real Claude Code run |
-| 4 | Codex adapter; diff view; `gh` PR flow; OS notifications; command palette; perf harness and first numbers | The full desktop loop works on a real repo; `swarn-bench` reports RSS and p99 frame time |
+| 4 | Codex app-server driver; diff view; `gh` PR flow; OS notifications; command palette; first-run flow steps 1 to 9 (§5.5) with `SMAppService` registration and keep-awake; perf harness and first numbers | A fresh macOS user account goes from first launch to a running agent without opening a terminal except to sign in; `swarn-bench` reports RSS and p99 frame time |
 | 5 | HPKE envelopes; pairing flow and QR; device listener; discovery candidates and mDNS; `swarn-mobile` UniFFI surface | An integration test pairs a simulated device and streams events end to end |
-| 6 | iOS app: pairing, inbox, session view, reply; NSE with decrypt, probe, approve; push gateway Worker deployed | Push to approval works on a real iPhone; **first App Store submission by end of week** |
+| 6 | iOS app: pairing, inbox, session view, reply; NSE with decrypt, probe, approve; push gateway Worker deployed; first-run steps 10 and 11 (§5.5) | Push to approval works on a real iPhone, and the onboarding test approval passes; **first App Store submission by end of week** |
 | 7 | Reachability edge cases; reconnect and backoff; retention and janitor; threat model document; error states everywhere | A week of eating our own cooking with no sharp edges found twice |
 | 8 | Dogfooding, bug fixes, release engineering: notarized DMG, auto-update, README, install script | Release bar met (below) |
 
@@ -704,11 +749,11 @@ The rule for a solo build with agents writing code: every non-trivial behaviour 
 
 ### 9.2 Integration tests
 
-- `tests/pair_and_stream.rs`: spawn a daemon with a temp database, pair a simulated device, start a scripted fake ACP agent, assert the device receives the events in order and can approve.
+- `tests/pair_and_stream.rs`: spawn a daemon with a temp database, pair a simulated device, start a scripted fake agent, assert the device receives the events in order and can approve.
 - `tests/worktree_failure.rs`: a setup script that exits 1 leaves `state='failed'` and a removable directory.
-- `tests/acp_contract/`: recorded ACP transcripts per CLI version, replayed against the adapter. Pinned per version, because the whole point is to notice when a CLI changes shape. Re-record deliberately, never automatically.
+- `tests/agent_contract/`: recorded stream-json and app-server transcripts per CLI version, replayed against the drivers. Pinned per version, because the whole point is to notice when a CLI changes shape. Re-record deliberately, never automatically. Claude Code shipped five adapter-level releases in one week in October 2026, so this suite earns its keep.
 
-The fake ACP agent is a small binary in `swarn-bench` that reads a script file and emits ACP notifications on a timer. It is also what the perf harness uses, so there is one fake agent, not two.
+The fake agent is a small binary in `swarn-bench` that reads a script file and replays Claude Code stream-json messages on a timer, permission requests included. It is also what the perf harness and the onboarding test approval (§5.5 step 11) use, so there is one fake agent, not three.
 
 ### 9.3 Performance
 
@@ -731,8 +776,7 @@ These are genuinely unresolved, not deferred:
 1. Trademark search for "Swarn", plus `crates.io`, the GitHub org, the domain, and both store listings. Every `get.swarn.dev` and `ghcr.io/swarn` reference in these documents is a placeholder until that clears. The name also reads as a typo of "swarm", which is worth ten minutes of thought before the repo is public.
 2. Whether `gh` stays the PR mechanism past v0.2 or we move to the GitHub API with a token in the Keychain. `gh` is right for v0.1 and wrong for a daemon that runs headless on a VPS.
 3. Launch plan. Nothing in this document depends on it, and it decides whether the 5,000 weekly active users goal is a measurement or a wish.
-4. Whether the desktop app should start the daemon or require `swarn daemon install` first. Current plan: the app starts it on first run and offers to install the launchd agent, which is two code paths and might be one too many.
+4. Resolved 16 Oct 2026: the app registers the daemon through `SMAppService` on first run (§5.5 step 1).
+5. Written guidance from Anthropic on an open-source app driving the user's own `claude -p` on a Free, Pro or Max subscription. The policy text allows users to sign in to the unmodified binary themselves and forbids apps from offering Claude.ai login or handling tokens; Swarn does neither, but ask before launch rather than infer. The same question exists for Codex: app-server auth is permitted for local and open-source apps and not for commercial or hosted ones, which matters if Swarn ever charges.
+6. Differentiation. Claude Code Remote Control and the ChatGPT desktop app already run worktree sessions with phone approvals through their vendors' relays, and cmux has encrypted its pushes since 5 Oct 2026. What no one offers is a phone that talks to the Mac directly, with no vendor relay, and a human-approval default. That is a product PRD question, but it should shape what v0.2's relay promises.
 
-## 11. Directory note
-
-This file currently lives in a directory named `Diamond`, the old working name. Rename the directory and the repo to `swarn` before the first commit so the git history never carries the old name.
