@@ -6,9 +6,9 @@ Swarn starts Claude Code and Codex sessions in their own git worktrees, shows wh
 and sends an end-to-end encrypted push to your iPhone when one of them needs you. You approve, deny
 or reply from the notification, read the diff on the desktop, and open the pull request with `gh`.
 
-> **Status: pre-alpha.** This is week 1 of an eight-week build toward v0.1. The desktop app talks to
-> the daemon and lists repositories; agents, approvals and the iPhone app come next. Nothing here is
-> ready for daily use yet.
+> **Status: pre-alpha.** This is week 2 of an eight-week build toward v0.1. The daemon runs Claude
+> Code in git worktrees and you can approve its tool calls from a terminal. The desktop transcript,
+> Codex and the iPhone app come next. Nothing here is ready for daily use yet.
 
 ## How it fits together
 
@@ -44,6 +44,25 @@ Add a repository and it shows up in the window within two seconds:
 ```bash
 cargo run -p swarn-daemon -- call repo.add '{"path":"/path/to/a/git/repo"}'
 ```
+
+From there you can run Claude Code in its own worktree and approve its tool calls from a terminal.
+`swarnd` here is `target/debug/swarnd`, and the ids come from each command's output:
+
+```bash
+swarnd call workspace.create '{"repo_id":"<repo id>","name":"first-task"}'
+```
+
+```bash
+swarnd watch
+```
+
+```bash
+swarnd call session.start '{"workspace_id":"<workspace id>","prompt":"Add a README section"}'
+```
+
+`swarnd watch` streams the transcript and prints the exact `approval.resolve` command whenever the
+agent asks for permission. Sessions use your own `claude` and your own login, so sign in with
+`claude /login` first.
 
 The daemon keeps its socket and database in `~/Library/Application Support/swarn`. Set `SWARN_HOME`
 on both processes to point them somewhere else, which is handy for experiments.

@@ -23,6 +23,9 @@ pub enum Status {
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     SessionStarted,
+    /// A prompt or follow-up the user sent. Not in the PRD's first list; added so a transcript
+    /// shows both sides.
+    UserMessage,
     StatusChanged,
     AgentMessageDelta,
     AgentMessageEnd,
@@ -40,6 +43,28 @@ pub enum EventKind {
     /// kind ship without bumping the schema.
     #[serde(other)]
     Unknown,
+}
+
+/// The one place status is derived (§4.2). `pending` is how many permission requests are still
+/// open after this event, because with parallel tool calls one resolution can leave others open.
+pub fn next_status(current: Status, kind: EventKind, pending: usize) -> Status {
+    use EventKind::*;
+    let busy = if pending > 0 {
+        Status::NeedsInput
+    } else {
+        Status::Working
+    };
+    match kind {
+        SessionStarted | UserMessage => busy,
+        AgentMessageDelta | ThoughtDelta | ToolCall | ToolCallUpdate | Plan => busy,
+        PermissionRequest => Status::NeedsInput,
+        PermissionResolved => busy,
+        AgentMessageEnd => Status::Done,
+        Error => Status::Failed,
+        SessionEnded if current == Status::Failed => Status::Failed,
+        SessionEnded => Status::Exited,
+        StatusChanged | Usage | DiffStat | Unknown => current,
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -296,6 +321,41 @@ mod tests {
             serde_json::to_value(Status::NeedsInput).unwrap(),
             json!("needs_input")
         );
+    }
+
+    #[test]
+    fn status_follows_every_event_kind() {
+        use EventKind::*;
+        use Status::*;
+        let cases = [
+            (Starting, SessionStarted, 0, Working),
+            (Done, UserMessage, 0, Working),
+            (Working, AgentMessageDelta, 0, Working),
+            (Working, ThoughtDelta, 0, Working),
+            (Working, ToolCall, 0, Working),
+            (Working, ToolCallUpdate, 0, Working),
+            (Working, Plan, 0, Working),
+            (Working, PermissionRequest, 1, NeedsInput),
+            (NeedsInput, PermissionResolved, 0, Working),
+            // Two parallel requests: resolving one leaves the session waiting on the other.
+            (NeedsInput, PermissionResolved, 1, NeedsInput),
+            (NeedsInput, ToolCallUpdate, 1, NeedsInput),
+            (Working, AgentMessageEnd, 0, Done),
+            (Working, Error, 0, Failed),
+            (Failed, SessionEnded, 0, Failed),
+            (Done, SessionEnded, 0, Exited),
+            (Working, Usage, 0, Working),
+            (NeedsInput, DiffStat, 1, NeedsInput),
+            (Done, StatusChanged, 0, Done),
+            (Working, Unknown, 0, Working),
+        ];
+        for (current, kind, pending, expected) in cases {
+            assert_eq!(
+                next_status(current, kind, pending),
+                expected,
+                "{current:?} + {kind:?} ({pending} pending)"
+            );
+        }
     }
 
     #[test]

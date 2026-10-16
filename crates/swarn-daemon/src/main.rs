@@ -3,15 +3,23 @@
 //!
 //! `swarnd`                       run the daemon in the foreground
 //! `swarnd call <method> [json]`  send one JSON-RPC request to a running daemon and print the result
+//! `swarnd watch [after-seq]`     print the live transcript of every session
 
 mod api;
+mod claude;
 mod db;
+mod env;
+mod events;
+mod workspace;
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::process::ExitCode;
 
+use std::io::Write;
+
 use serde_json::Value;
 use swarn_core::local_api::{self, swarn_home};
+use swarn_core::schema::{Event, EventKind};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -20,8 +28,9 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None => run(),
         Some("call") if args.len() >= 2 => call(&args[1], args.get(2).map(String::as_str)),
+        Some("watch") => watch(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)),
         _ => {
-            eprintln!("usage: swarnd [call <method> [params-json]]");
+            eprintln!("usage: swarnd [call <method> [params-json] | watch [after-seq]]");
             ExitCode::from(2)
         }
     }
@@ -48,6 +57,75 @@ fn call(method: &str, params: Option<&str>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The week 2 terminal client: agent text streams inline, everything else gets its own line.
+fn watch(after_seq: u64) -> ExitCode {
+    let mut mid_line = false;
+    let result = local_api::subscribe(after_seq, |event| {
+        print_event(&event, &mut mid_line);
+        true
+    });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_event(event: &Event, mid_line: &mut bool) {
+    let p = &event.payload;
+    let tag = &event.session_id[event.session_id.len().saturating_sub(6)..];
+    let text = |v: &Value| v.as_str().unwrap_or_default().to_owned();
+    let line = match event.kind {
+        EventKind::AgentMessageDelta => {
+            print!("{}", text(&p["text"]));
+            let _ = std::io::stdout().flush();
+            *mid_line = true;
+            return;
+        }
+        EventKind::UserMessage => format!("[{tag}] > {}", text(&p["text"])),
+        EventKind::SessionStarted => format!(
+            "[{tag}] session started ({} {})",
+            text(&p["model"]),
+            text(&p["version"])
+        ),
+        EventKind::ToolCall => format!("[{tag}] tool {} {}", text(&p["name"]), p["input"]),
+        EventKind::ToolCallUpdate => format!("[{tag}] tool {}", text(&p["status"])),
+        EventKind::PermissionRequest => format!(
+            "[{tag}] NEEDS APPROVAL ({}) {}\n    swarnd call approval.resolve '{{\"request_id\":\"{}\",\"decision\":\"allow_once\"}}'",
+            text(&p["risk"]),
+            text(&p["summary"]),
+            text(&p["request_id"]),
+        ),
+        EventKind::PermissionResolved => {
+            let reason = p["reason"]
+                .as_str()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default();
+            format!("[{tag}] approval {}{reason}", text(&p["decision"]))
+        }
+        EventKind::StatusChanged => format!("[{tag}] status: {}", text(&p["status"])),
+        EventKind::Usage => format!(
+            "[{tag}] usage: {} in, {} out, ${}",
+            p["input_tokens"], p["output_tokens"], p["cost_usd"]
+        ),
+        EventKind::Error => format!("[{tag}] error: {}", text(&p["message"])),
+        EventKind::SessionEnded => format!("[{tag}] session ended ({})", p["exit_code"]),
+        EventKind::AgentMessageEnd
+        | EventKind::ThoughtDelta
+        | EventKind::Plan
+        | EventKind::DiffStat
+        | EventKind::Unknown => {
+            return;
+        }
+    };
+    if std::mem::take(mid_line) {
+        println!();
+    }
+    println!("{line}");
 }
 
 #[tokio::main]
@@ -80,8 +158,26 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(&socket); // stale, from a daemon that died without cleaning up
 
     let db = db::Db::open(&home.join("state.db"))?;
+    // Agent processes die with the daemon that owned them, so no session survives a restart.
+    db.call(|conn| {
+        conn.execute(
+            "UPDATE session SET status = 'exited', ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE status IN ('starting', 'working', 'needs_input', 'done')",
+            [],
+        )
+    })
+    .await?;
     let info = api::machine_info(&db).await?;
-    let api = api::Api { db, info };
+    let agent_env = env::AgentEnv::capture().await;
+    let log = events::EventLog::new(db.clone());
+    let sessions = claude::Sessions::new(db.clone(), log.clone(), agent_env);
+    let api = api::Api {
+        db,
+        info,
+        home: home.clone(),
+        log,
+        sessions,
+    };
 
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;

@@ -192,7 +192,7 @@ Daemon to device:
 
 Event kinds, which are also the rows in the event log:
 
-`session_started`, `status_changed`, `agent_message_delta`, `agent_message_end`, `thought_delta`, `tool_call`, `tool_call_update`, `plan`, `permission_request`, `permission_resolved`, `usage`, `diff_stat`, `session_ended`, `error`.
+`session_started`, `user_message`, `status_changed`, `agent_message_delta`, `agent_message_end`, `thought_delta`, `tool_call`, `tool_call_update`, `plan`, `permission_request`, `permission_resolved`, `usage`, `diff_stat`, `session_ended`, `error`.
 
 Clients must ignore unknown event kinds rather than erroring. That one rule is what makes adding an event kind a non-breaking change and keeps the N/N-1 window from filling up with trivia.
 
@@ -261,7 +261,7 @@ Signing input is the UTF-8 concatenation, with 0x1F separators, of: `swarn/appro
 
 The daemon rejects an approval if any of these hold: unknown `request_id`, `nonce` mismatch, signature invalid for that device's stored P-256 key, `request_id` already resolved, `signed_at` more than 60 seconds in the future, or `expires_at` already passed. Every acceptance and rejection is appended to the event log as `permission_resolved` with the decision, device id, and reason on rejection.
 
-Expiry is ours, not the CLI's. Neither CLI times a pending approval out: the Claude Agent SDK's `canUseTool` "can stay pending indefinitely", Claude Remote Control keeps prompts open until answered, and ACP specifies no timeout (sources in `docs/research/competitor-onboarding.md` §3.12–3.14). So `expires_at` is `default_expiry_secs` from the policy, 30 minutes unless changed, which keeps a notification from sitting on a lock screen for a day pretending to be live. Week 2 still confirms the "never times out" behaviour against the real CLIs.
+Expiry is ours, not the CLI's. Neither CLI times a pending approval out: the Claude Agent SDK's `canUseTool` "can stay pending indefinitely", Claude Remote Control keeps prompts open until answered, and ACP specifies no timeout (sources in `docs/research/competitor-onboarding.md` §3.12–3.14). So `expires_at` is `default_expiry_secs` from the policy, 30 minutes unless changed, which keeps a notification from sitting on a lock screen for a day pretending to be live. Week 2 measured it for Claude Code: a request left open for 20 minutes produced no output at all and completed normally when answered (`docs/cli-behaviour.md`). Codex gets the same check in week 4.
 
 When a request expires, the daemon answers the agent with an explicit deny and logs `permission_resolved` with reason `expired`, never as a user decision. Conductor shipped the bug where timeouts were "reported as user denials" (0.83.0); the event log has to tell the two apart.
 
@@ -458,7 +458,7 @@ v0.1 drives each CLI directly from Rust, through the interface its vendor publis
 
 | Agent | Process | Protocol |
 | --- | --- | --- |
-| Claude Code | the user's `claude`, unmodified: `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio --permission-mode default` | newline-delimited JSON on stdio; permission prompts arrive as `control_request` messages of subtype `can_use_tool` and are answered with a `control_response`; `--resume <session_id>` continues a session |
+| Claude Code | the user's `claude`, unmodified: `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode manual --permission-prompt-tool stdio` (measured in `docs/cli-behaviour.md`: `manual` is the asking mode in 2.1.300, and without the stdio prompt tool it denies on its own) | newline-delimited JSON on stdio; permission prompts arrive as `control_request` messages of subtype `can_use_tool` and are answered with a `control_response`; `--resume <session_id>` continues a session |
 | Codex | the user's `codex app-server` | JSON-RPC over stdio JSONL; `thread/start` and `turn/start` drive a session; approvals arrive as server requests such as `item/commandExecution/requestApproval`, answered with `accept`, `acceptForSession`, `decline` or `cancel` |
 
 Why not the ACP adapters the first draft named. They have moved and changed shape: `zed-industries/codex-acp` is archived, and its replacement is a Node 22 package that itself wraps `codex app-server`. `@agentclientprotocol/claude-agent-acp` embeds its own pinned SDK and CLI, so it cannot drive the user's installed `claude`, and JetBrains documents that a Claude agent added through ACP cannot run on a Free, Pro or Max subscription. The tools that work well drive the vendor interfaces directly: Vibe Kanban and Sculptor use `claude -p` with stream-json, and Happy, Nimbalyst and Vibe Kanban use `codex app-server`. Driving them ourselves costs two small JSON protocols instead of one, removes Node from the install, and keeps Anthropic's auth policy simple: the end user signs in to the unmodified Claude Code binary themselves, which the policy explicitly allows. Evidence for all of this is in `docs/research/competitor-onboarding.md` §1, §3.12–3.14 and §4.2. ACP comes back in v0.2 as the generic tier for agents without their own interface (Gemini, Copilot and others).
@@ -481,14 +481,17 @@ Mapping onto Swarn events. Exact message and method names are pinned by the reco
 | `permission_resolved` | our `control_response` | our reply to the server request | `working` |
 | `usage` | `result` message usage and cost | token usage notification | unchanged |
 | `agent_message_end` | `result` message, subtype `success` | `turn/completed` | `done` |
-| `session_ended` | process exit after an interrupt | `turn/interrupt` completed | `exited` |
+| `agent_message_end` with `stop_reason: cancelled` | `result` of subtype `error_during_execution` after our `interrupt` control request; the process stays alive | `turn/interrupt` completed | `done` |
+| `session_ended` | process exit | process exit | `exited` |
 | `error`, `session_ended` | non-zero exit or an error `result` | non-zero exit or error notification | `failed` |
 
 Status is derived in exactly one place, a pure function over the last event and the current status, which means it is unit-testable without a child process:
 
 ```rust
-pub fn next_status(current: Status, ev: &EventKind) -> Status
+pub fn next_status(current: Status, kind: EventKind, pending_permissions: usize) -> Status
 ```
+
+The pending count is what lets one resolution among several parallel requests leave the session in `needs_input` (review item 11).
 
 Permission requests are the interesting path. The agent blocks until the daemon answers, so the daemon writes the `permission_request` event, fires a push, and holds the reply until an approval arrives, the request expires, or the session is cancelled. Nothing about this is polled; it is a oneshot channel per request.
 
