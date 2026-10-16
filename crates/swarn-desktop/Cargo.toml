@@ -12,7 +12,19 @@ path = "src/main.rs"
 
 [dependencies]
 futures = "0.3"
+# Only for the bench feature: reads GPUI's frame histograms.
+hdrhistogram = { version = "7", optional = true }
 gpui.workspace = true
+gpui-component = "=0.7.3"
 gpui_platform.workspace = true
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSError"] }
+objc2-service-management = { version = "0.3.2", features = ["SMAppService"] }
+serde = "1.0.229"
 serde_json = "1.0.154"
 swarn-core = { version = "0.1.0", path = "../swarn-core", features = ["local-client"] }
+
+
+[features]
+# Turns on GPUI's frame profiler for swarn-bench.
+bench = ["gpui/profiler", "dep:hdrhistogram"]

@@ -53,7 +53,7 @@ fn approval_unblocks_the_agent_and_queued_text_follows_it() {
     .unwrap();
 
     let (tx, events) = mpsc::channel::<Event>();
-    std::thread::spawn(move || subscribe(0, |e| tx.send(e).is_ok()));
+    std::thread::spawn(move || subscribe(0, |e, _| tx.send(e).is_ok()));
 
     let session: Session = call(
         "session.start",

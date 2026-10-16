@@ -14,6 +14,8 @@ const MARKER: &[u8] = b"\n__SWARN_ENV__\n";
 #[derive(Clone, Debug)]
 pub struct AgentEnv {
     pub vars: HashMap<String, String>,
+    /// False when the login shell could not be read and the daemon's own environment stands in.
+    pub captured: bool,
 }
 
 impl AgentEnv {
@@ -32,11 +34,12 @@ impl AgentEnv {
             Ok(Ok(out)) if out.status.success() => parse(&out.stdout),
             _ => None,
         };
+        let ok = captured.is_some();
         let vars = captured.unwrap_or_else(|| {
             eprintln!("swarnd: could not read the login shell environment; using the daemon's own");
             std::env::vars().collect()
         });
-        Self { vars }
+        Self { vars, captured: ok }
     }
 
     /// First match for `program` on the captured `PATH`.

@@ -8,8 +8,9 @@ use rusqlite::{OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use swarn_core::local_api::{
-    ApprovalResolve, DaemonInfo, Notification, RepoAdd, Request, Response, RpcError, SessionId,
-    SessionPrompt, SessionStart, Subscribe, WorkspaceArchive, WorkspaceCreate,
+    ApprovalResolve, DaemonInfo, Notification, PrCreate, RepoAdd, Request, Response, RpcError,
+    SessionId, SessionPrompt, SessionStart, Subscribe, WorkspaceArchive, WorkspaceCreate,
+    WorkspaceId,
 };
 use swarn_core::schema::{Event, Repo, WorkspaceState};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -18,9 +19,11 @@ use tokio::net::unix::OwnedWriteHalf;
 use tokio::process::Command;
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::claude::Sessions;
 use crate::db::Db;
+use crate::env::AgentEnv;
 use crate::events::EventLog;
+use crate::review;
+use crate::sessions::{Driver, Sessions};
 use crate::workspace::{self, run_git};
 
 #[derive(Clone)]
@@ -30,6 +33,7 @@ pub struct Api {
     pub home: PathBuf,
     pub log: EventLog,
     pub sessions: Arc<Sessions>,
+    pub env: AgentEnv,
 }
 
 impl Api {
@@ -56,7 +60,10 @@ impl Api {
                 };
                 send(
                     &mut write,
-                    &Response::ok(request.id, json!({ "subscribed": true })),
+                    &Response::ok(
+                        request.id,
+                        json!({ "subscribed": true, "head": self.log.head().await }),
+                    ),
                 )
                 .await?;
                 return self.stream(write, after).await;
@@ -111,6 +118,34 @@ impl Api {
                 .await
                 .map(|w| json!(w))
                 .map_err(Failed),
+            "setup.check" => Ok(crate::setup::check(&self.env).await),
+            "policy.get" => Ok(json!(crate::policy::load())),
+            "policy.set" => match params::<swarn_core::local_api::Policy>(p) {
+                Ok(policy) => crate::policy::save(&policy)
+                    .map(|()| json!(policy))
+                    .map_err(Failed),
+                Err(e) => Err(Invalid(e)),
+            },
+            "diff.get" => match params::<WorkspaceId>(p) {
+                Ok(p) => match self.workspace(&p.workspace_id).await {
+                    Ok(ws) => review::diff(&ws)
+                        .await
+                        .map(|diff| json!({ "diff": diff }))
+                        .map_err(Failed),
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(Invalid(e)),
+            },
+            "pr.create" => match params::<PrCreate>(p) {
+                Ok(p) => match self.workspace(&p.workspace_id).await {
+                    Ok(ws) => review::create_pr(&self.env, &ws, &p.title, &p.body)
+                        .await
+                        .map(|url| json!({ "url": url }))
+                        .map_err(Failed),
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(Invalid(e)),
+            },
             "workspace.archive" => match params::<WorkspaceArchive>(p) {
                 Ok(p) => workspace::archive(&self.db, p.workspace_id, p.force)
                     .await
@@ -179,13 +214,21 @@ impl Api {
             .map_err(Failed)
     }
 
+    async fn workspace(&self, id: &str) -> Result<swarn_core::schema::Workspace, Failure> {
+        workspace::get(&self.db, id)
+            .await
+            .map_err(Failed)?
+            .ok_or_else(|| Failed(format!("no workspace {id}")))
+    }
+
     async fn session_start(&self, p: SessionStart) -> Result<Value, Failure> {
-        if p.agent != "claude-code" {
-            return Err(Failed(format!(
-                "agent {:?} is not supported yet; the Codex driver arrives in week 4",
-                p.agent
-            )));
-        }
+        let driver =
+            Driver::for_agent(&p.agent, crate::policy::load().approvals.mode).ok_or_else(|| {
+                Failed(format!(
+                    "unknown agent {:?}; use \"claude-code\" or \"codex\"",
+                    p.agent
+                ))
+            })?;
         let ws = workspace::get(&self.db, &p.workspace_id)
             .await
             .map_err(Failed)?
@@ -197,7 +240,7 @@ impl Api {
             )));
         }
         self.sessions
-            .start(ws.id, ws.worktree_path, p.prompt, p.model)
+            .start(driver, ws.id, ws.worktree_path, p.prompt, p.model)
             .await
             .map(|s| json!(s))
             .map_err(Failed)

@@ -1,5 +1,13 @@
+mod bench;
+mod compose;
+mod diff;
 mod markdown;
 mod model;
+mod notify;
+mod palette;
+mod review;
+mod service;
+mod setup;
 mod shell;
 mod theme;
 mod transcript;
@@ -25,6 +33,7 @@ const FONTS: [&[u8]; 7] = [
 ];
 
 fn main() {
+    bench::launched();
     let app = gpui_platform::application();
     // macOS keeps the app alive with no windows; a Dock click brings the window back.
     app.on_reopen(|cx| {
@@ -36,6 +45,8 @@ fn main() {
         cx.text_system()
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
             .expect("bundled fonts load");
+        gpui_component::init(cx);
+        palette::bind_keys(cx);
 
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &CloseWindow, cx| {
@@ -75,7 +86,15 @@ fn open_main_window(cx: &mut App) {
             app_owns_titlebar_drag: true,
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| Shell::new(window, cx)),
+        |window, cx| {
+            let shell = cx.new(|cx| Shell::new(window, cx));
+            // Keyboard actions reach the shell from the start, before anything is clicked.
+            palette::register_handlers(cx, shell.downgrade());
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            // gpui-component's Root hosts the overlays its widgets need (menus, popovers).
+            cx.new(|cx| gpui_component::Root::new(shell, window, cx))
+        },
     )
     .expect("main window opens");
 }
