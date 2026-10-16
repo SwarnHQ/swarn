@@ -1,5 +1,8 @@
+mod markdown;
+mod model;
 mod shell;
 mod theme;
+mod transcript;
 
 use std::borrow::Cow;
 

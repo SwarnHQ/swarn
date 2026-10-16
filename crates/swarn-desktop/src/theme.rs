@@ -4,7 +4,11 @@
 // Most tokens have no view yet; they land as screens are built.
 #![allow(dead_code)]
 
-use gpui::{App, Global, Rgba, Window, WindowAppearance, rgb};
+use gpui::{
+    App, Div, ElementId, FontWeight, Global, Rgba, SharedString, Stateful, Window,
+    WindowAppearance, div, prelude::*, px, rgb,
+};
+use swarn_core::schema::Status;
 
 pub const SANS: &str = "Manrope";
 pub const MONO: &str = "Roboto Mono";
@@ -131,6 +135,79 @@ impl Theme {
     pub fn get(cx: &App) -> &Self {
         cx.global::<Self>()
     }
+
+    /// Status colours, borrowed from Plexo's network hues: teal while working, amber when the
+    /// user is needed (Plexo's accent), steel when done, danger red on failure, grey otherwise.
+    pub fn status_hue(&self, status: Option<Status>) -> Hue {
+        match status {
+            Some(Status::Working) => self.teal,
+            Some(Status::NeedsInput) => self.amber,
+            Some(Status::Done) => self.steel,
+            Some(Status::Failed) => Hue {
+                solid: self.danger,
+                bg: self.danger_bg,
+                border: self.danger_border,
+                text: self.danger,
+                on_solid: self.bg,
+            },
+            None | Some(Status::Starting) | Some(Status::Exited) => Hue {
+                solid: self.text_tertiary,
+                bg: self.bg_secondary,
+                border: self.border,
+                text: self.text_secondary,
+                on_solid: self.bg,
+            },
+        }
+    }
+}
+
+/// Plexo's small-caps section label: mono, uppercase, tertiary. GPUI has no letter-spacing, so
+/// the tracking Plexo adds is missing here.
+pub fn label(theme: &Theme, text: impl Into<SharedString>) -> Div {
+    div()
+        .font_family(MONO)
+        .text_size(px(10.5))
+        .line_height(px(10.5))
+        .text_color(theme.text_tertiary)
+        .child(text.into().to_uppercase())
+}
+
+#[derive(Clone, Copy)]
+pub enum ButtonKind {
+    Primary,
+    Secondary,
+    Destructive,
+}
+
+/// Plexo's shadcn button at its default size: 32px tall, 8px radius, 14px medium text.
+pub fn button(
+    theme: &Theme,
+    id: impl Into<ElementId>,
+    text: &'static str,
+    kind: ButtonKind,
+) -> Stateful<Div> {
+    let (bg, fg, border) = match kind {
+        ButtonKind::Primary => (theme.accent, theme.accent_on_solid, theme.accent),
+        ButtonKind::Secondary => (theme.bg_tertiary, theme.text, theme.border),
+        ButtonKind::Destructive => (theme.danger_bg, theme.danger, theme.danger_border),
+    };
+    div()
+        .id(id)
+        .h(px(32.))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(RADIUS))
+        .border(px(1.))
+        .border_color(border)
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .hover(|s| s.opacity(0.85))
+        .active(|s| s.opacity(0.7))
+        .child(text)
 }
 
 fn hue(solid: u32, bg: u32, border: u32, text: u32, on_solid: u32) -> Hue {

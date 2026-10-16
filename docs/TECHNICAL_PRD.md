@@ -560,8 +560,8 @@ swarn-desktop/src/
 The success metric is p99 under 8.3 ms on macOS while ten agents stream. Three rules get us there, and all three are structural rather than optimisations to add later:
 
 1. Parsing happens off the main thread. The daemon connection task deserialises events, builds render-ready blocks, and sends them to the UI as diffs against the model. The UI thread applies and lays out; it never parses markdown.
-2. Transcripts are virtualized with `uniform_list`, so only visible rows are laid out. A 50,000 line transcript costs the same as a 50 line one.
-3. Streaming deltas coalesce. The model buffers `agent_message_delta` for 16 ms and appends once, so a chatty agent cannot force more than one relayout per frame.
+2. Transcripts are virtualized with GPUI's `list`, so only visible rows are laid out. A 50,000 line transcript costs the same as a 50 line one. (Not `uniform_list`, which the first draft named: it needs every row to be the same height, and transcript blocks are not.)
+3. Streaming deltas coalesce. The desktop drains its event stream in 16 ms batches and re-measures only the rows a batch touched, so a chatty agent cannot force more than one relayout per frame.
 
 Markdown rendering in v0.1 is deliberately shallow: paragraphs, code fences, lists, inline code, links. No tables, no nested blockquote styling, no syntax highlighting inside fences. It is a custom streaming element because incremental parsing of a growing string is the whole problem and no crate on the allowlist does it.
 

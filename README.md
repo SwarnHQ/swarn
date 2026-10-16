@@ -6,9 +6,10 @@ Swarn starts Claude Code and Codex sessions in their own git worktrees, shows wh
 and sends an end-to-end encrypted push to your iPhone when one of them needs you. You approve, deny
 or reply from the notification, read the diff on the desktop, and open the pull request with `gh`.
 
-> **Status: pre-alpha.** This is week 2 of an eight-week build toward v0.1. The daemon runs Claude
-> Code in git worktrees and you can approve its tool calls from a terminal. The desktop transcript,
-> Codex and the iPhone app come next. Nothing here is ready for daily use yet.
+> **Status: pre-alpha.** This is week 3 of an eight-week build toward v0.1. The daemon runs Claude
+> Code in git worktrees, and the desktop app shows each session's transcript and lets you approve its
+> tool calls. Starting sessions from the app, Codex and the iPhone app come next. Nothing here is
+> ready for daily use yet.
 
 ## How it fits together
 
@@ -60,8 +61,8 @@ swarnd watch
 swarnd call session.start '{"workspace_id":"<workspace id>","prompt":"Add a README section"}'
 ```
 
-`swarnd watch` streams the transcript and prints the exact `approval.resolve` command whenever the
-agent asks for permission. Sessions use your own `claude` and your own login, so sign in with
+The desktop app shows the transcript and an approval card whenever the agent asks for permission.
+`swarnd watch` does the same in a terminal and prints the exact `approval.resolve` command. Sessions use your own `claude` and your own login, so sign in with
 `claude /login` first.
 
 The daemon keeps its socket and database in `~/Library/Application Support/swarn`. Set `SWARN_HOME`
