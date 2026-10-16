@@ -67,6 +67,9 @@ pub struct DaemonInfo {
     pub version: String,
     pub schema_min: u32,
     pub schema_max: u32,
+    /// The port phones connect to, once the device listener is up.
+    #[serde(default)]
+    pub device_port: Option<u16>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

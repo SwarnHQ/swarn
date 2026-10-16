@@ -8,6 +8,8 @@ use hpke::{Deserializable, Kem as _, OpModeR, OpModeS, Serializable};
 use p256::ecdsa::signature::Verifier as _;
 use serde::{Deserialize, Serialize};
 
+pub use {ed25519_dalek, p256};
+
 type Kem = hpke::kem::X25519HkdfSha256;
 type Kdf = hpke::kdf::HkdfSha256;
 type Aead = hpke::aead::ChaCha20Poly1305;

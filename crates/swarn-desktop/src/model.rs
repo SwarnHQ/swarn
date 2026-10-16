@@ -109,6 +109,8 @@ impl Transcript {
                 decision: None,
                 reason: None,
             })),
+            // A refused attempt (bad signature, expired…) leaves the request open.
+            EventKind::PermissionResolved if p["rejected"] == true => None,
             EventKind::PermissionResolved => {
                 let request_id = text(&p["request_id"]);
                 let ix = self

@@ -147,9 +147,44 @@ pub struct Approval {
     pub sig: String,
 }
 
+/// What a pairing phone sends first (§2.5 step 3), sealed to the daemon's static key. Keys and
+/// the proof are base64url without padding.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PairRequest {
+    pub device_id: String,
+    pub name: String,
+    pub platform: String,
+    pub x25519_pub: String,
+    pub p256_pub: String,
+    #[serde(default)]
+    pub push_token: Option<String>,
+    /// The pairing window token from the QR code.
+    pub pw: String,
+    /// P-256 signature over `crypto::pairing_signing_input`.
+    pub proof: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PairAck {
+    pub machine_id: String,
+    pub machine_name: String,
+    pub schema_min: u32,
+    pub schema_max: u32,
+}
+
+/// The plaintext inside every sealed live frame. `ctr` rises strictly per sender, and a receiver
+/// drops anything at or below the last one it accepted, so a frame captured on the network can't
+/// be replayed (PRD review item 6).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Wire<M> {
+    pub ctr: u64,
+    pub msg: M,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeviceMessage {
+    PairRequest(PairRequest),
     Hello {
         schema_min: u32,
         schema_max: u32,
@@ -192,6 +227,7 @@ pub struct Candidate {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonMessage {
+    PairAck(PairAck),
     HelloAck {
         schema: u32,
         machine_id: String,
