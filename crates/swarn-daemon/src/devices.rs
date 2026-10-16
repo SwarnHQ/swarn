@@ -33,6 +33,8 @@ use crate::sessions::Sessions;
 
 /// §2.5: a pairing token is good for 120 seconds and one use.
 const PAIR_WINDOW: Duration = Duration::from_secs(120);
+const STRANGER_GRACE: Duration = Duration::from_secs(30);
+const MAX_FRAME: usize = 300 * 1024;
 
 /// §2.1 ceiling: at most this often per session, streamed text is batched into one frame.
 const DELTA_BATCH: Duration = Duration::from_millis(100);
@@ -183,9 +185,16 @@ impl Devices {
         if &head[..n] == b"GET /healthz" {
             return self.healthz(stream).await;
         }
-        let ws = tokio_tungstenite::accept_async(stream)
+        // The largest padded frame is 256 KiB; anything bigger is not ours, and a stranger
+        // shouldn't get to make the daemon buffer tungstenite's 64 MiB default.
+        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(MAX_FRAME))
+            .max_frame_size(Some(MAX_FRAME));
+        let ws = tokio_tungstenite::accept_async_with_config(stream, Some(config))
             .await
             .map_err(|e| e.to_string())?;
+        // A connection has this long to pair or prove it's a known device, then it's dropped.
+        let deadline = tokio::time::Instant::now() + STRANGER_GRACE;
         let (mut sink, mut source) = ws.split();
 
         // One writer per connection; everything outgoing goes through it, sealed to the device.
@@ -214,7 +223,16 @@ impl Devices {
 
         let mut device: Option<Device> = None;
         let mut stream_task: Option<AbortOnDrop> = None;
-        while let Some(Ok(message)) = source.next().await {
+        loop {
+            let next = if device.is_some() {
+                source.next().await
+            } else {
+                tokio::time::timeout_at(deadline, source.next())
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            let Some(Ok(message)) = next else { break };
             let Message::Binary(bytes) = message else {
                 continue;
             };

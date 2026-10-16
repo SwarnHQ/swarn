@@ -128,6 +128,24 @@ fn a_phone_pairs_follows_a_session_and_approves() {
         "{body}"
     );
 
+    // A stranger sending an oversized frame is cut off rather than buffered.
+    let socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let (mut stranger, _) = tungstenite::client(
+        format!("ws://127.0.0.1:{port}/"),
+        MaybeTlsStream::Plain(socket),
+    )
+    .unwrap();
+    let _ = stranger.send(Message::binary(vec![0u8; 1024 * 1024]));
+    let timed_out = matches!(
+        stranger.read(),
+        Err(tungstenite::Error::Io(e))
+            if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+    );
+    assert!(!timed_out, "an oversized frame was accepted");
+
     // Pair from the QR URL.
     let pairing: Value = call("device.pair_window", json!({})).unwrap();
     let url = pairing["url"].as_str().unwrap();
