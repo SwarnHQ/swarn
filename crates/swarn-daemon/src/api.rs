@@ -115,6 +115,14 @@ impl Api {
                 .await
                 .map(|w| json!(w))
                 .map_err(Failed),
+            "setup.check" => Ok(crate::setup::check(&self.env).await),
+            "policy.get" => Ok(json!(crate::policy::load())),
+            "policy.set" => match params::<swarn_core::local_api::Policy>(p) {
+                Ok(policy) => crate::policy::save(&policy)
+                    .map(|()| json!(policy))
+                    .map_err(Failed),
+                Err(e) => Err(Invalid(e)),
+            },
             "diff.get" => match params::<WorkspaceId>(p) {
                 Ok(p) => match self.workspace(&p.workspace_id).await {
                     Ok(ws) => review::diff(&ws)
@@ -211,12 +219,13 @@ impl Api {
     }
 
     async fn session_start(&self, p: SessionStart) -> Result<Value, Failure> {
-        let driver = Driver::for_agent(&p.agent).ok_or_else(|| {
-            Failed(format!(
-                "unknown agent {:?}; use \"claude-code\" or \"codex\"",
-                p.agent
-            ))
-        })?;
+        let driver =
+            Driver::for_agent(&p.agent, crate::policy::load().approvals.mode).ok_or_else(|| {
+                Failed(format!(
+                    "unknown agent {:?}; use \"claude-code\" or \"codex\"",
+                    p.agent
+                ))
+            })?;
         let ws = workspace::get(&self.db, &p.workspace_id)
             .await
             .map_err(Failed)?

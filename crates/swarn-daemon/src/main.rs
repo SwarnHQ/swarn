@@ -11,8 +11,10 @@ mod codex;
 mod db;
 mod env;
 mod events;
+mod policy;
 mod review;
 mod sessions;
+mod setup;
 mod workspace;
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -188,6 +190,8 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         sessions,
         env: agent_env,
     };
+
+    tokio::spawn(policy::keep_awake(api.db.clone()));
 
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;

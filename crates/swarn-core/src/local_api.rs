@@ -92,6 +92,64 @@ pub struct WorkspaceArchive {
     pub force: bool,
 }
 
+/// `~/.config/swarn/policy.toml` (§2.6). Read only by the daemon, never from a worktree, so an
+/// agent cannot widen its own permissions. Missing keys take their defaults.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Policy {
+    #[serde(default)]
+    pub approvals: Approvals,
+    #[serde(default)]
+    pub power: Power,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Approvals {
+    #[serde(default)]
+    pub mode: ApprovalMode,
+    #[serde(default = "thirty_minutes")]
+    pub default_expiry_secs: u64,
+}
+
+impl Default for Approvals {
+    fn default() -> Self {
+        Self {
+            mode: ApprovalMode::default(),
+            default_expiry_secs: thirty_minutes(),
+        }
+    }
+}
+
+fn thirty_minutes() -> u64 {
+    30 * 60
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Ask before every file write and every command (the default, and the point of Swarn).
+    #[default]
+    Ask,
+    /// Let agents edit files in their worktree without asking; still ask before commands.
+    AllowEdits,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Power {
+    /// Hold off idle sleep while any agent is working or waiting (§5.5 step 9).
+    #[serde(default = "yes")]
+    pub keep_awake: bool,
+}
+
+impl Default for Power {
+    fn default() -> Self {
+        Self { keep_awake: true }
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct WorkspaceId {
     pub workspace_id: String,

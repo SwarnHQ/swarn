@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use rusqlite::params;
 use serde_json::{Value, json};
+use swarn_core::local_api::ApprovalMode;
 use swarn_core::schema::{Decision, EventKind, Session};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -19,9 +20,6 @@ use crate::codex::Codex;
 use crate::db::Db;
 use crate::env::AgentEnv;
 use crate::events::EventLog;
-
-/// Policy default (§2.6) until `policy.toml` exists. Neither CLI times a prompt out on its own.
-const APPROVAL_EXPIRY: Duration = Duration::from_secs(30 * 60);
 
 /// What a driver wants done after reading one line from its agent.
 #[derive(Debug, PartialEq)]
@@ -85,10 +83,18 @@ pub enum Driver {
 }
 
 impl Driver {
-    pub fn for_agent(agent: &str) -> Option<Self> {
+    pub fn for_agent(agent: &str, mode: ApprovalMode) -> Option<Self> {
         match agent {
-            "claude-code" => Some(Self::Claude(Claude::default())),
-            "codex" => Some(Self::Codex(Codex::default())),
+            "claude-code" => {
+                let mut claude = Claude::default();
+                claude.mode = mode;
+                Some(Self::Claude(claude))
+            }
+            "codex" => {
+                let mut codex = Codex::default();
+                codex.mode = mode;
+                Some(Self::Codex(codex))
+            }
             _ => None,
         }
     }
@@ -114,7 +120,7 @@ impl Driver {
 
     fn args(&self, model: Option<&str>) -> Vec<String> {
         match self {
-            Self::Claude(_) => Claude::args(model),
+            Self::Claude(c) => c.args(model),
             Self::Codex(_) => vec!["app-server".into()],
         }
     }
@@ -358,6 +364,8 @@ impl Sessions {
     }
 
     async fn open_permission(self: &Arc<Self>, session_id: &str, ask: Ask) {
+        // Neither CLI times a prompt out on its own, so the expiry is ours (§2.6).
+        let expiry = Duration::from_secs(crate::policy::load().approvals.default_expiry_secs);
         let request_id = ulid::Ulid::generate().to_string();
         let nonce = random_hex();
         let (rid, sid, tool, risk, n) = (
@@ -380,7 +388,7 @@ impl Sessions {
                         tool,
                         risk,
                         n,
-                        format!("+{} seconds", APPROVAL_EXPIRY.as_secs())
+                        format!("+{} seconds", expiry.as_secs())
                     ],
                     |r| r.get(0),
                 )
@@ -412,7 +420,7 @@ impl Sessions {
 
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            tokio::time::sleep(APPROVAL_EXPIRY).await;
+            tokio::time::sleep(expiry).await;
             let _ = this
                 .resolve(&request_id, Decision::Deny, Some("expired"))
                 .await;

@@ -2,6 +2,7 @@
 //! Flags and message shapes were checked against Claude Code 2.1.300; see docs/cli-behaviour.md.
 
 use serde_json::{Value, json};
+use swarn_core::local_api::ApprovalMode;
 use swarn_core::schema::{Decision, EventKind};
 
 use crate::sessions::{Action, Ask, Reply};
@@ -16,14 +17,14 @@ const ARGS: &[&str] = &[
     "stream-json",
     "--verbose",
     "--include-partial-messages",
-    "--permission-mode",
-    "manual",
     "--permission-prompt-tool",
     "stdio",
 ];
 
 #[derive(Default)]
 pub struct Claude {
+    /// `manual` asks before writes and commands; `acceptEdits` only before commands.
+    pub mode: ApprovalMode,
     /// Claude repeats `init` on every turn; the session started once.
     started: bool,
     /// Set by `interrupt`. Claude ends an interrupted turn with an error `result`, which here
@@ -32,8 +33,13 @@ pub struct Claude {
 }
 
 impl Claude {
-    pub fn args(model: Option<&str>) -> Vec<String> {
+    pub fn args(&self, model: Option<&str>) -> Vec<String> {
         let mut args: Vec<String> = ARGS.iter().map(|a| (*a).to_owned()).collect();
+        let mode = match self.mode {
+            ApprovalMode::Ask => "manual",
+            ApprovalMode::AllowEdits => "acceptEdits",
+        };
+        args.extend(["--permission-mode".to_owned(), mode.to_owned()]);
         if let Some(model) = model {
             args.extend(["--model".to_owned(), model.to_owned()]);
         }

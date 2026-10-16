@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
+use swarn_core::local_api::ApprovalMode;
 use swarn_core::schema::{Decision, EventKind};
 
 use crate::sessions::{Action, Ask, Reply};
@@ -14,6 +15,7 @@ const THREAD_START: u64 = 2;
 
 #[derive(Default)]
 pub struct Codex {
+    pub mode: ApprovalMode,
     next_id: u64,
     cwd: String,
     model: Option<String>,
@@ -100,7 +102,14 @@ impl Codex {
                 // "swarn/0.147.0 (Mac OS …)": the version after the originator.
                 let agent = msg["result"]["userAgent"].as_str().unwrap_or_default();
                 self.version = agent.split([' ', '/']).nth(1).map(str::to_owned);
-                let mut params = json!({ "cwd": self.cwd, "approvalPolicy": "on-request", "sandbox": "read-only" });
+                // read-only makes every write ask; workspace-write lets edits through and still
+                // asks before anything that needs more than the worktree.
+                let sandbox = match self.mode {
+                    ApprovalMode::Ask => "read-only",
+                    ApprovalMode::AllowEdits => "workspace-write",
+                };
+                let mut params =
+                    json!({ "cwd": self.cwd, "approvalPolicy": "on-request", "sandbox": sandbox });
                 if let Some(model) = &self.model {
                     params["model"] = json!(model);
                 }
