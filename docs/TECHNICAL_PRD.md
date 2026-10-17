@@ -196,6 +196,16 @@ Event kinds, which are also the rows in the event log:
 
 Clients must ignore unknown event kinds rather than erroring. That one rule is what makes adding an event kind a non-breaking change and keeps the N/N-1 window from filling up with trivia.
 
+Additions after v0.1, from reading Orca's session journal (`docs/research/orca.md` §3):
+
+- **`user_message` is written before it is sent** and carries `delivery`: `pending`, then `accepted`, `rejected` or `unknown`. The row is the optimistic bubble on every client. `unknown`, for example after a daemon crash mid-send, is shown as "delivery unconfirmed" and never resent automatically.
+- **`agent_message_end` gains `outcome` (`success`, `error`, `cancelled`) and `duration_ms`.** Both CLIs report some API errors as finished turns, so whether a turn finished and whether it succeeded are separate facts. The duration feeds the transcript's meta line and "Worked for…" folds (§5.7).
+- **Text deltas reach the log as coalesced snapshots.** The driver merges deltas for up to 100 ms, then writes one `agent_message_delta` holding the full text so far, with `index` unchanged. Any other event flushes the window first, so order is kept. Replaying a range twice converges, which makes reconnects and the v0.2 mailbox simpler, and it cuts log rows by an order of magnitude.
+- **New kinds:**
+  - `message_queued` and `message_dequeued` for the composer queue (§5.8).
+  - `title_changed` for agent-written workspace titles (§4.3).
+  - `checks` for CI state (§5.9).
+
 ### 2.5 Pairing
 
 The QR code is the whole trust transfer, so it carries everything the phone needs and nothing it should not keep.
@@ -413,6 +423,8 @@ Payloads are JSON blobs whose shape is fixed per kind. Three that matter:
 {"input_tokens": 12043, "output_tokens": 882, "cost_usd": 0.14, "context_pct": 38}
 ```
 
+`tool_call_update` output is bounded at the daemon: the first 16 KB, plus `byte_length`, `sha256` and `truncated: true` when it was cut. The full output stays in the agent's own transcript. A 40 MB `cat` must not reach a phone over cellular, and the cut is always visible.
+
 `usage` is written only when the agent reports it. A missing meter renders as absent, never as zero. Fabricating a cost estimate from token counts and a price table we guessed is worse than showing nothing.
 
 ### 3.3 Retention
@@ -493,6 +505,12 @@ pub fn next_status(current: Status, kind: EventKind, pending_permissions: usize)
 
 The pending count is what lets one resolution among several parallel requests leave the session in `needs_input` (review item 11).
 
+Every child gets `SWARN_SESSION_ID` in its environment. On startup the daemon matches surviving processes by that variable and by pid, so a reused pid is never mistaken for a live agent. If it can't tell, it reports the session as unknown rather than dead (`docs/research/orca.md` §2).
+
+Changing a session's permission mode or account takes effect on the next turn. The daemon restarts the child with `--resume` (Claude) or `thread/resume` (Codex) before sending, because both CLIs read their mode only at start.
+
+Messages sent while a turn runs are queued in the daemon, not in the client, so the phone and the desktop see one queue. Steering a queued message into the running turn writes it to Claude's stream-json input, or sends `turn/steer` naming the running turn for Codex. Stop pauses the queue rather than draining it.
+
 Permission requests are the interesting path. The agent blocks until the daemon answers, so the daemon writes the `permission_request` event, fires a push, and holds the reply until an approval arrives, the request expires, or the session is cancelled. Nothing about this is polled; it is a oneshot channel per request.
 
 Two risks to watch. Claude's headless docs say `--bare`, which skips OAuth and the Keychain and needs an API key, "will become the default for -p in a future release"; if that lands, subscription users need a flag to opt out or the Agent SDK path, and the contract tests will catch the change. And agents spawned by a background process have failed to authenticate because they could not reach the macOS Keychain (codex-acp #310, claude-agent-acp #548), which is why week 2 starts with that test under launchd.
@@ -520,6 +538,10 @@ A failure in steps 1 to 3 sets `state='failed'` with the error in the log and le
 `git2` does not cover every worktree operation cleanly, so the daemon shells out to `git` for `worktree add` and `worktree remove` and uses `git2` for diffs and status. Mixing them is a known inelegance and cheaper than either alternative. Revisit `gitoxide` after v0.5.
 
 Port allocation for setup and run scripts: the daemon gives each workspace a block of 10 free ports from a configurable range (default 31000-31999, so 100 workspaces), exports the first as `SWARN_PORT`, and records the block. Conductor and Emdash both settled on 10 because apps often need a second port. Dev servers are not reachable from the phone before v0.5.
+
+The daemon also attributes listening ports to workspaces by walking each port's owning process up to a workspace's setup or run script or agent, the way Orca does (`docs/research/orca.md` §6). Allocation tells a script which port to use; attribution tells the user which ports are actually open. The Run tab shows them as links (§5.9).
+
+Workspace titles start as the first line of the first prompt. When the first turn ends, the daemon asks the same agent for a title of at most six words, using the agent's own one-shot mode with no tools, and writes `title_changed`. A title the user set is never replaced. The branch name doesn't change after creation, because renaming a branch under a running agent breaks its git commands.
 
 ### 4.4 Local API
 
@@ -552,6 +574,9 @@ swarn-desktop/src/
     diff_view.rs     # plain monospace diff
     palette.rs       # command palette
     pairing.rs       # QR sheet, device list
+    composer.rs      # input, pickers, queue, approval slot (§5.8, after v0.1)
+    right_panel.rs   # PR header, files, changes, checks (§5.9, after v0.1)
+    dock.rs          # setup, run, terminal (§5.9, after v0.1)
   theme.rs           # one Zed theme, loaded as-is
 ```
 
@@ -589,6 +614,152 @@ The first launch is a short checklist, one screen per step. Every step can be re
 10. Pair a phone, optional. Before the QR appears, the Mac side says whether it found Tailscale or will be LAN-only, since v0.1 has no relay. The phone asks for camera, Local Network and notification permission during pairing, in that order (§2.5, §2.7).
 11. Send a test approval end to end: a fake permission request from `swarnd`, through the push gateway, approved on the phone, back to the daemon. The top complaints about competitors' phone apps are pushes that never arrive and pairing that fails silently, so onboarding proves the path works before the user depends on it.
 12. Start the first workspace from a prompt box.
+
+### 5.6 Window layout after v0.1
+
+The v0.1 window has a sidebar and one transcript. The target after v0.1 has three columns and a bottom dock. It follows the layout of Conductor's current desktop app, which the team chose as the reference on 17 Oct 2026, redrawn in Swarn's own design system: Manrope and Roboto Mono, the Plexo palette in `theme.rs`, 0.5 px hairlines, 8 px radii, the 32 px title bar, and the three button kinds. Nothing is copied from Conductor's styling, only the arrangement. Build order is in §8.3.
+
+```
+┌ title bar ─────────────┬ repo › branch  ⋯        [Open in ▾] [◧] ┬ #73 ↗  Uncommitted changes  [Commit and push] ┐
+│ ◉ Seb's Mac ▾          │ Tab: task one │ Tab: task two │ + │ ⟲    │ All files · Changes 1241 · Checks           │
+│ Home                   │                                            │                                            │
+│ Create            ✎    │   transcript (§5.7)                    ▮  │   PR title and body                        │
+│ Search                 │                                        ▮  │   Git status   257 uncommitted   [Commit]  │
+│ ─────────────────────  │                                        ▮  │                1 behind main     [Pull]    │
+│ ▣ repo-a  2         +  │                                            │   Checks       ✓ Verify 13s          ↗   │
+│   ⑂ Promote staging  +318 −3.9k                                     │                ✓ Unit tests          ↗   │
+│   ⑂ Fix login flow   +76      │                                     ├────────────────────────────────────────────┤
+│ ▣ repo-b  1         +  │   [Next unread ›]                          │ ⌄ Setup · Run · Terminal · +               │
+│ ─────────────────────  │ ┌ composer (§5.8) ─────────────────────┐   │   dock output                              │
+│ footer: daemon, phone  │ └──────────────────────────────────────┘   │                                            │
+└────────────────────────┴────────────────────────────────────────────┴────────────────────────────────────────────┘
+```
+
+**Left sidebar** (`views/sidebar.rs`, 240 px, `bg_secondary`):
+
+- **Machine switcher at the top.** It shows this Mac's name and daemon status. It lists other machines only once the desktop can attach to a remote daemon (v0.3). Until then it is a label with no menu.
+- **Home** is the attention inbox: every workspace whose status is `needs_input`, `done` with unread output, or `failed`, newest first. It is the desktop's version of the phone's lock screen.
+- **Create** opens the prompt-first new-workspace flow: pick a repo, type the task, choose the agent and model, start. The branch name is derived from the prompt and can be edited.
+- **Search** is the command palette scoped to workspaces and transcript text. The daemon serves transcript search from SQLite FTS5 over message text.
+- **Repo groups:**
+  - Each group shows the repo name, a count of active workspaces, and a "+" that opens Create with that repo chosen.
+  - Under each group, one row per workspace: a status glyph, the workspace title, and `+added −removed` from the latest `diff_stat`.
+  - The status glyph uses the existing status hues: a spinner while `working`, amber for `needs_input`, a check for `done`, `danger` for `failed`.
+  - Rows with unread output use `text` weight; read rows use `text_secondary`.
+- **Workspace titles come from the agent.** A title starts as the first line of the prompt, and the daemon renames it after the first turn from the agent's own summary, the way Orca does (`docs/research/orca.md` §6). The user's rename always wins.
+- **Footer:** daemon status, paired phones, and Setup. The existing footer moves here.
+- **Back and forward in the title bar** walk the history of selected workspaces and tabs (Cmd-[ and Cmd-]).
+
+**Center column:**
+
+- **Header:**
+  - A breadcrumb (repo › branch) whose "⋯" menu holds rename, archive, copy path and reveal in Finder.
+  - An **Open in** button that remembers the last choice and lists installed editors and tools found by bundle id: Finder, Terminal, Ghostty, iTerm, Zed, VS Code, Cursor, Xcode.
+  - A toggle for the right panel.
+- **Tabs, one per session in the workspace.** The daemon already allows several sessions per workspace. A tab's label is the session's first prompt, and a spinner or amber dot marks its status. "+" starts a new session in the same worktree. The history button lists ended sessions.
+- **Below the tabs:** the transcript (§5.7) and the composer (§5.8).
+
+**Right panel** (§5.9) is 380 px, can be collapsed, and remembers its state per workspace.
+
+**Widths:**
+
+- The sidebar is fixed.
+- The transcript text column caps at 46 rem (736 px) and stays centred in wider windows.
+- Below 1100 px of window width the right panel collapses on its own.
+- Below 800 px the sidebar collapses too. This replaces the header fix from week 7.
+
+### 5.7 Transcript
+
+The model is unchanged: blocks built off the main thread, GPUI `list`, 16 ms batches (§5.2). Orca's chat (`docs/research/orca.md` §4) supplied most of the rules below.
+
+- **User messages** are right-aligned bubbles on `bg_tertiary`, capped at 80% of the column. They fold after 8 lines behind "Show full message".
+- **Agent prose** is left-aligned with no bubble.
+- **Under each user message and each final answer, a meta line:** duration and time ("34s · 6:52 am") in `text_tertiary` Roboto Mono, plus copy and a "⋯" menu (copy as markdown, rewind here in v0.4). The duration comes from the turn record (§2.4).
+- **Tool runs.** An unbroken stretch of tool calls between two pieces of prose renders as one row.
+  - Its header is a sentence built from the categories in order of first use: "Read 7 files, ran 17 commands, and searched 4 times". A run with a single call shows the call itself, for example `>_ Reveal backend QA handoff in Finder` followed by the command in a mono chip.
+  - While live, the header shows the latest call. The row stays the same element from start to finish, so it never remounts.
+  - Each category has one fixed glyph that never changes with status. Only a trailing mark changes: a spinner, a check on stated success, or a red count of failures.
+  - Expanding a run lists each call. A call opens to its command, its output (capped at 4,000 characters, `max_h` 256 px, with a "truncated" note when the daemon cut it), or its diff.
+- **Folded turns.** A finished turn collapses its tool runs and intermediate messages behind one line, "› 1 tool call, 3 messages, 1 subagent", and shows only the final answer. Expanding is remembered per turn, outside the virtualized rows, so scrolling doesn't reset it.
+- **Interrupted turns** show an `INTERRUPTED BY USER` chip (mono, `border_strong`). A turn that ended in an error shows the error inline, never "Done".
+- **The live line under the last row** shows what the agent is doing now, with a running clock: "Waiting for subagent Add test context · 6m 7.7s". It is the only element that redraws every second.
+- **Following the tail:**
+  - The view follows new output until the reader scrolls up, presses PageUp or Home, or drags the scrollbar.
+  - Layout changes never break following. Programmatic scrolls are flagged so the view doesn't mistake them for the reader.
+  - Following resumes within 4 px of the bottom.
+  - When the reader is more than 48 px from the bottom, a "Jump to latest" pill appears.
+- **Next unread** jumps to the oldest unread `needs_input` or `done` across all workspaces, and appears whenever one exists elsewhere (Cmd-J).
+- **The message rail** is one tick per user message along the right edge of the transcript. Hovering shows the first line of that message, and clicking jumps to it.
+- **Markdown.** Code fences get syntax highlighting in v0.2 through `syntect` on the background thread. Inline code chips use `border` and Roboto Mono. File paths that exist in the worktree become links that open in the editor chosen in Open in.
+
+### 5.8 Composer and approvals
+
+The composer's design follows a reference the team chose on 17 Oct 2026, the composer in OpenAI's Codex desktop app. As with §5.6, only the arrangement is copied; colours, type and controls come from `theme.rs`.
+
+```
+      ╭ ▢ swarn   ▭ This Mac ──────────────────────────────────── ⚙ ╮   context strip
+╭─────┴──────────────────────────────────────────────────────────────┴─╮
+│ Do anything                                                           │   input
+│                                                                       │
+│ +   ☺ Approve for me   ⚓•                 Opus 5.5 High ⌄   🎙   (●)  │   toolbar
+╰───────────────────────────────────────────────────────────────────────╯
+```
+
+- **Context strip.** A tab joined to the top of the input, one step darker (`bg_secondary` on `bg_tertiary`), holding two chips and a gear:
+  - **Project** (folder icon) is the repo, or the workspace once one exists. In Create and on Home it opens a picker, which is how a prompt typed there becomes a new workspace. Inside a workspace it is a label.
+  - **Machine** (laptop icon) is where the agent runs. It reads "This Mac" until remote daemons exist (v0.3), and then shares its list with the sidebar's machine switcher (§5.6).
+  - **The gear** opens composer settings: default agent, Enter or Cmd-Enter to send, and whether messages sent mid-turn queue or steer.
+- **Input.**
+  - The placeholder is "Do anything" with no session, and "Ask for changes, @mention files, run /commands" inside one.
+  - It grows from one line to 12.
+  - `@` opens a fuzzy file picker over the worktree (`git ls-files`).
+  - `/` lists the agent's own slash commands, read from Claude's `init` message or Codex's command list, plus Swarn's own.
+  - Images can be pasted or dropped.
+  - Each workspace keeps a draft that survives restarts.
+  - With the input empty, the up arrow walks back through sent prompts.
+- **Toolbar, left to right:**
+  - **"+"** attaches files or images.
+  - **Approve for me** is the approval policy as a single toggle. Off (the default) means "ask before writes and commands". On means "allow edits, ask before commands", which is the `allow_edits` mode in `policy.toml` (§2.6). Its icon fills with `amber` while on, so the relaxed state is visible at a glance. A mode change takes effect on the next turn (§4.2). The full three-way choice stays in Setup.
+  - **A status glyph with a dot** shows background state that needs a look without interrupting the prompt: a setup script still running, a check that failed, a phone that disconnected. Clicking it opens a short list. The dot is `amber` for attention and absent otherwise.
+  - **Model and effort,** read as one phrase, "Opus 5.5 High ⌄", with the model in `text` and the effort in `text_secondary`. Clicking it opens a popover above the button:
+    - The effort level as a title in `accent`.
+    - The model name with "›", which opens the model list from `agent.models`.
+    - A slider with one stop per effort the model supports, filled in `accent` up to the current stop with a white thumb.
+    - A lightning toggle on the left for fast mode, where the agent has one.
+    - A reset icon on the right that returns to the agent's default.
+    While the popover is open the button reads "Select effort". Claude takes `--effort` (`low`, `medium`, `high`, `xhigh`, `max`). Codex takes the effort on `turn/start`, from the list each model reports. The choice is per workspace and sent with the next turn, so changing it never restarts a running turn.
+  - **Microphone:** dictation through macOS speech recognition into the input, as text the user edits before sending. v0.2.
+  - **The round button** at the far right is the primary action. It's white on `bg`:
+    - Empty input: the waveform for voice mode (v0.3).
+    - Any text: an up arrow that sends.
+    - A turn running: a square that stops. It ignores a double click, so the second click can't cancel the turn the first one started.
+  - **The context ring** sits just left of the microphone, fed by `usage.context_pct`. It is hidden when the agent doesn't report usage, because a missing meter renders as absent (§3.2).
+- **Sending while the agent works queues the message.** Queued messages show as cards above the input with Edit, Delete and Send now. They go out in order when the turn ends, and Stop pauses the queue. Send now steers: Claude takes the message mid-turn through its stream-json input, and Codex through `turn/steer` (§4.2).
+- **Pending approvals take the composer's place** instead of sitting in the transcript, so the thing that needs an answer is where the user is already looking.
+  - The card shows the tool, a summary, the full input or diff (`max_h` 288 px), and the policy's reason.
+  - Its buttons are the agent's own options: Allow once (Primary), Allow for session, Deny (Destructive).
+  - Keys 1 to 3 pick an option, and Esc collapses the card to a strip above the input.
+  - Once answered, a one-line receipt stays in the transcript: "Allowed once from Seb's iPhone".
+  - Several pending approvals stack as a pager: "1 of 3".
+
+### 5.9 Right panel and dock
+
+- **Header:**
+  - The PR number as a link once `pr.create` has run, or "No pull request".
+  - A one-line state: "Uncommitted changes", "Ready to merge", "Checks failing".
+  - One primary action that follows the state: Commit and push, Create PR, or Merge.
+  - Commit and push asks the agent to write the commit message from the diff; the user can edit it before it runs.
+- **Tabs:**
+  - **All files:** a tree of the worktree, with changed files marked.
+  - **Changes:** the diff view from §5.3, with its file count in the tab label.
+  - **Checks:**
+    - The PR title and body.
+    - Git status: uncommitted count with Commit and push, and commits behind the base branch with Pull, which runs a rebase or merge per the repo setting.
+    - CI checks from `gh pr checks`, each with its state glyph, duration and a link out. The daemon polls checks every 30 s while the panel is open and the PR has pending checks, and never otherwise.
+- **The dock** at the bottom of the panel collapses to its tab strip:
+  - **Setup:** output of the repo setup script (§4.3).
+  - **Run:** the repo run script, started and stopped from here. It shows the listening ports the daemon attributes to the workspace's process tree, each as a link.
+  - **Terminal:** a shell in the worktree. GPUI has no terminal widget, so this uses `alacritty_terminal` for the grid, as Zed does, and the PTY is owned by the daemon so it survives the app. This is the largest item in §8.3 and comes last.
 
 ## 6. Mobile
 
@@ -733,6 +904,20 @@ If week 6 slips, the cut is iOS polish, not the submission date: submit whatever
 
 Apple Developer ($99/yr, open it in week 1 because verification takes days), Google Play ($25, before v0.2), domain, Cloudflare account holding the APNs key, and the dev Mac that doubles as the perf runner.
 
+### 8.3 After v0.1: the window layout
+
+The layout in §5.6 to §5.9 lands in five steps after v0.1. Each step ships on its own, and each is usable without the next.
+
+| Step | What | Daemon work | Done when |
+| --- | --- | --- | --- |
+| L1 | Transcript rules from §5.7: tool runs as sentences, folded turns, meta lines, interrupted chips, the live line, following only until a reader's gesture, Jump to latest | `outcome` and `duration_ms` on `agent_message_end`; coalesced snapshots; bounded tool output | A 2,000-call Codex session reads as a dozen rows, and p99 frame time stays under 8.3 ms while it streams |
+| L2 | Composer from §5.8: context strip, Approve for me, the model and effort popover, `@` files, `/` commands, drafts, history, the queue with Send now, approvals in the composer's place with number keys | `delivery` on `user_message`; per-turn effort for both CLIs; the daemon-held queue; steering for both CLIs | A message sent mid-turn is delivered after the turn or steered into it, from the desktop and from the phone |
+| L3 | Sidebar and header from §5.6: Home inbox, Create, Search, repo groups with diff stats, agent-written titles, tabs per session, Open in, back and forward, Next unread, the message rail | `title_changed`; FTS5 search over message text; editor detection | A user with ten workspaces finds the one that needs them without reading the sidebar line by line |
+| L4 | Right panel from §5.9: PR header with the state-driven action, All files, Changes, Checks with git status, Pull, and CI checks | `checks` events from `gh pr checks`; Commit and push with an agent-written message; Pull | A workspace goes from first prompt to merged PR without leaving the window |
+| L5 | Dock: Setup and Run output, attributed ports, then the terminal | Port attribution; daemon-owned PTYs | A dev server started from Run opens from its port link, and a terminal survives quitting the app |
+
+L1 and L2 come first because they change how every session reads, and the phone shares their daemon work. L5's terminal is the largest single item and the most likely to slip, so it goes last and nothing depends on it.
+
 ## 9. Testing
 
 The rule for a solo build with agents writing code: every non-trivial behaviour leaves behind one runnable check that fails if the behaviour breaks. Not a suite per function. One check that matters, in CI, so an agent can verify its own change without asking.
@@ -781,5 +966,12 @@ These are genuinely unresolved, not deferred:
 3. Launch plan. Nothing in this document depends on it, and it decides whether the 5,000 weekly active users goal is a measurement or a wish.
 4. Resolved 16 Oct 2026: the app registers the daemon through `SMAppService` on first run (§5.5 step 1).
 5. Written guidance from Anthropic on an open-source app driving the user's own `claude -p` on a Free, Pro or Max subscription. The policy text allows users to sign in to the unmodified binary themselves and forbids apps from offering Claude.ai login or handling tokens; Swarn does neither, but ask before launch rather than infer. The same question exists for Codex: app-server auth is permitted for local and open-source apps and not for commercial or hosted ones, which matters if Swarn ever charges.
-6. Differentiation. Claude Code Remote Control and the ChatGPT desktop app already run worktree sessions with phone approvals through their vendors' relays, and cmux has encrypted its pushes since 5 Oct 2026. What no one offers is a phone that talks to the Mac directly, with no vendor relay, and a human-approval default. That is a product PRD question, but it should shape what v0.2's relay promises.
+6. Differentiation. Claude Code Remote Control and the ChatGPT desktop app already run worktree sessions with phone approvals through their vendors' relays, and cmux has encrypted its pushes since 5 Oct 2026. What no one offers is a phone that talks to the Mac directly, with no vendor relay, and a human-approval default. That is a product PRD question, but it should shape what v0.2's relay promises. Orca, the largest open-source competitor, sharpens the point (`docs/research/orca.md` §5):
+
+- Its phone answers terminal-mode approvals by typing a keystroke into the agent's terminal.
+- Its pushes carry plaintext title and body through its own gateway.
+- Its relay requires an account.
+- Its onboarding offers a "Yolo permissions" switch.
+
+Signed approval objects, encrypted push and asking first by default are each a concrete difference, not a slogan.
 
