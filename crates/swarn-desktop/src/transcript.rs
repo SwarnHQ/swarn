@@ -7,10 +7,9 @@ use gpui::{
 };
 use swarn_core::schema::{Decision, Status};
 
-use crate::compose::AGENTS;
 use crate::markdown::{Inline, Md, parse};
 use crate::model::{Approval, Block, ToolState};
-use crate::shell::{GUTTER, Shell, chip};
+use crate::shell::{COLUMN, GUTTER, Shell, chip};
 use crate::theme::{ButtonKind, HAIRLINE, MONO, Theme, button, label};
 
 impl Shell {
@@ -35,29 +34,28 @@ impl Shell {
         };
         let session = self.board.sessions.iter().find(|s| s.id == shown);
         let live = session.is_some_and(|s| !matches!(s.status, Status::Exited | Status::Failed));
-        let agent = session
-            .and_then(|s| AGENTS.iter().find(|(id, _)| *id == s.agent))
-            .map_or("Agent", |(_, name)| *name);
 
         let body = match block {
+            // The user's turn: a bubble on the right, the agent's answer plain on the left.
             Block::User(text) => div()
                 .flex()
-                .flex_col()
-                .gap(px(6.))
-                .px(px(12.))
-                .py(px(10.))
-                .rounded(px(8.))
-                .border(px(HAIRLINE))
-                .border_color(theme.border)
-                .bg(theme.bg_secondary)
-                .child(label(&theme, "You"))
-                .child(div().text_size(px(13.5)).line_height(px(21.)).child(text))
+                .justify_end()
+                .child(
+                    div()
+                        .max_w(gpui::relative(0.8))
+                        .px(px(14.))
+                        .py(px(9.))
+                        .rounded(px(16.))
+                        .bg(theme.track_bg)
+                        .text_size(px(14.))
+                        .line_height(px(21.))
+                        .child(text),
+                )
                 .into_any_element(),
             Block::Agent { text, .. } => div()
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(label(&theme, agent))
                 .children(parse(&text).into_iter().map(|md| markdown(&theme, md)))
                 .into_any_element(),
             Block::Tool {
@@ -66,18 +64,17 @@ impl Shell {
                 state,
                 ..
             } => {
-                let (dot, word) = match state {
-                    ToolState::Pending => (theme.icon_muted, "pending"),
-                    ToolState::Completed => (theme.success, "done"),
+                // One quiet line per call, the target in a mono chip, as Conductor shows them.
+                let (mark, word) = match state {
+                    ToolState::Pending => (theme.text_tertiary, "running"),
+                    ToolState::Completed => (theme.text_tertiary, ""),
                     ToolState::Failed => (theme.danger, "failed"),
                 };
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .font_family(MONO)
-                    .text_size(px(11.5))
-                    .child(div().size(px(6.)).flex_none().rounded_full().bg(dot))
+                    .text_size(px(13.))
                     .child(
                         div()
                             .flex_none()
@@ -86,16 +83,23 @@ impl Shell {
                     )
                     .child(
                         div()
-                            .flex_1()
                             .min_w_0()
                             .truncate()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded(px(6.))
+                            .bg(theme.track_bg)
+                            .font_family(MONO)
+                            .text_size(px(11.5))
                             .text_color(theme.text_tertiary)
                             .child(target),
                     )
+                    .child(div().flex_1())
                     .child(
                         div()
                             .flex_none()
-                            .text_color(theme.text_tertiary)
+                            .text_size(px(12.))
+                            .text_color(mark)
                             .child(word),
                     )
                     .into_any_element()
@@ -112,10 +116,13 @@ impl Shell {
                 .child(text)
                 .into_any_element(),
         };
+        // A centred reading column, as wide as Codex's.
         div()
+            .flex()
+            .justify_center()
             .px(px(GUTTER))
-            .pt(px(12.))
-            .child(body)
+            .pt(px(14.))
+            .child(div().flex_1().min_w_0().max_w(px(COLUMN)).child(body))
             .into_any_element()
     }
 
@@ -317,8 +324,8 @@ fn prose(theme: &Theme, inline: Inline) -> gpui::Div {
         .collect();
     highlights.sort_by_key(|(r, _)| r.start);
     div()
-        .text_size(px(13.5))
-        .line_height(px(21.))
+        .text_size(px(14.))
+        .line_height(px(22.))
         .child(StyledText::new(inline.text).with_highlights(highlights))
 }
 

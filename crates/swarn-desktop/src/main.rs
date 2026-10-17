@@ -88,7 +88,7 @@ fn open_main_window(cx: &mut App) {
             titlebar: Some(TitlebarOptions {
                 title: Some("Swarn".into()),
                 appears_transparent: true,
-                traffic_light_position: Some(point(px(16.), px(9.))),
+                traffic_light_position: Some(point(px(18.), px(12.))),
             }),
             app_id: Some("dev.swarn.desktop".into()),
             app_owns_titlebar_drag: true,

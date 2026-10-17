@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use crate::compose::AGENTS;
 use crate::diff::{self, Row};
+use crate::icons::{self, icon};
 use crate::shell::{GUTTER, Shell};
 use crate::theme::{ButtonKind, HAIRLINE, MONO, Theme, button};
 
@@ -127,78 +128,119 @@ impl Shell {
         );
     }
 
-    /// Right side of the workspace header: the view switch and Create PR.
+    /// Right side of the workspace header: Archive, and the toggle for the changes panel.
     pub(crate) fn header_actions(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let tab = |id: &'static str, text: &'static str, which: Tab| {
-            let on = self.tab == which;
-            div()
-                .id(id)
-                .px(px(8.))
-                .h_full()
-                .flex()
-                .items_center()
-                .rounded(px(4.))
-                .font_family(MONO)
-                .text_size(px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if on { theme.text } else { theme.text_tertiary })
-                .when(on, |d| d.bg(theme.track_bg))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.tab = which;
-                    if which == Tab::Diff {
-                        this.fetch_diff(cx);
-                    }
-                    cx.notify();
-                }))
-                .child(text)
-        };
+        let open = self.tab == Tab::Diff;
         div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(6.))
+            .child(
+                button(theme, "archive", "Archive", ButtonKind::Secondary).on_click(
+                    cx.listener(|this, _, window, cx| this.archive_workspace(false, window, cx)),
+                ),
+            )
             .child(
                 div()
+                    .id("toggle-panel")
+                    .size(px(28.))
                     .flex()
-                    .h(px(26.))
-                    .p(px(2.))
-                    .gap(px(2.))
-                    .rounded(px(6.))
-                    .border(px(HAIRLINE))
-                    .border_color(theme.border)
-                    .child(tab("tab-transcript", "Transcript", Tab::Transcript))
-                    .child(tab("tab-diff", "Diff", Tab::Diff)),
-            )
-            .child(
-                button(theme, "archive", "Archive", ButtonKind::Secondary)
-                    .h(px(26.))
-                    .text_size(px(12.5))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.archive_workspace(false, window, cx)
-                        }),
-                    ),
-            )
-            .child(
-                button(
-                    theme,
-                    "create-pr",
-                    if self.pr_busy {
-                        "Opening…"
-                    } else {
-                        "Create PR"
-                    },
-                    ButtonKind::Secondary,
-                )
-                .h(px(26.))
-                .text_size(px(12.5))
-                .when(!self.pr_busy, |b| {
-                    b.on_click(cx.listener(|this, _, _, cx| this.create_pr(cx)))
-                }),
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .when(open, |d| d.bg(theme.track_bg))
+                    .hover(|s| s.bg(theme.track_bg))
+                    .child(icon(
+                        icons::PANEL_RIGHT,
+                        16.,
+                        if open {
+                            theme.text
+                        } else {
+                            theme.text_tertiary
+                        },
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tab = if open { Tab::Transcript } else { Tab::Diff };
+                        if !open {
+                            this.fetch_diff(cx);
+                        }
+                        cx.notify();
+                    })),
             )
             .into_any_element()
     }
 
-    /// The diff as plain monospace rows; clicking a file header marks it viewed and folds it.
+    /// Conductor's third column: what the agent changed, and the pull request for it.
+    pub(crate) fn right_panel(
+        &self,
+        theme: &Theme,
+        workspace_id: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let files = match &self.diff {
+            Some(d) if d.workspace_id == workspace_id => d
+                .rows
+                .iter()
+                .filter(|r| matches!(r, Row::File { .. }))
+                .count(),
+            _ => 0,
+        };
+        div()
+            .w(px(440.))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .rounded_r(px(10.))
+            .bg(theme.bg_secondary)
+            .border_l(px(HAIRLINE))
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(46.))
+                    .px(px(16.))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Changes"),
+                    )
+                    .when(files > 0, |d| {
+                        d.child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(theme.text_tertiary)
+                                .child(format!(
+                                    "{files} {}",
+                                    if files == 1 { "file" } else { "files" }
+                                )),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        button(
+                            theme,
+                            "create-pr",
+                            if self.pr_busy {
+                                "Opening…"
+                            } else {
+                                "Create PR"
+                            },
+                            ButtonKind::Primary,
+                        )
+                        .when(!self.pr_busy, |b| {
+                            b.on_click(cx.listener(|this, _, _, cx| this.create_pr(cx)))
+                        }),
+                    ),
+            )
+            .child(self.diff_view(theme, workspace_id, cx))
+            .into_any_element()
+    }
+
     pub(crate) fn diff_view(
         &self,
         theme: &Theme,

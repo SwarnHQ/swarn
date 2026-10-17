@@ -1,5 +1,5 @@
-//! The window: Plexo's title bar, a workspace sidebar, the selected session's transcript and the
-//! footer strip. Everything shown comes from the daemon; the desktop holds no agent state (§1.1).
+//! The window, drawn after the Codex desktop app on Conductor's three columns: a sidebar of
+//! projects and workspaces, the selected session's transcript, and a panel for its changes. Everything shown comes from the daemon; the desktop holds no agent state (§1.1).
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -17,6 +17,7 @@ use swarn_core::schema::{Decision, Event, EventKind, Repo, Session, Status, Work
 use gpui_component::input::TextareaState;
 
 use crate::compose::{AGENTS, NewWorkspace, composer_state};
+use crate::icons::{self, icon};
 use crate::model::Board;
 use crate::review::{DiffState, Tab};
 use crate::service::{self, Service};
@@ -25,7 +26,9 @@ use crate::theme::{HAIRLINE, MONO, SANS, TITLE_BAR_HEIGHT, Theme, label};
 
 /// Plexo's 20px side gutter, used by every row and strip.
 pub const GUTTER: f32 = 20.;
-const SIDEBAR_WIDTH: f32 = 248.;
+/// The width of the transcript and composer column, centred in wider windows.
+pub const COLUMN: f32 = 760.;
+const SIDEBAR_WIDTH: f32 = 264.;
 
 pub struct Shell {
     pub(crate) board: Board,
@@ -358,57 +361,48 @@ impl Render for Shell {
             (Some(false), _, _) => self.offline_view(&theme, cx),
             (Some(true), _, _) if self.setup.is_some() => self.setup_view(&theme, cx),
             _ if self.form.is_some() => self.new_workspace_form(&theme, cx),
-            (Some(true), None, _) if self.board.repos.is_empty() => empty_state(
-                &theme,
-                "No repositories yet",
-                "Add one from the sidebar to get started.",
-                None,
-            ),
-            (Some(true), None, _) => empty_state(
-                &theme,
-                "No workspaces yet",
-                "Create one from the sidebar. Each gets its own worktree and branch.",
-                None,
-            ),
-            (Some(true), Some(ws), None) => div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .child(header(&theme, ws, None, self.header_actions(&theme, cx)))
-                .child(match self.tab {
-                    Tab::Diff => self.diff_view(&theme, &ws.id, cx),
-                    Tab::Transcript => empty_state(
-                        &theme,
-                        "No session yet",
-                        "Pick an agent and describe the task below.",
-                        None,
-                    ),
-                })
-                .child(self.composer(&theme, &ws.id, cx))
-                .into_any_element(),
-            (Some(true), Some(ws), Some(s)) => div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(header(
-                    &theme,
-                    ws,
-                    Some(s.status),
-                    self.header_actions(&theme, cx),
-                ))
-                .child(match self.tab {
-                    Tab::Diff => self.diff_view(&theme, &ws.id, cx),
-                    Tab::Transcript => list(
-                        self.list.clone(),
-                        cx.processor(|this, ix, window, cx| this.render_block(ix, window, cx)),
-                    )
+            (Some(true), None, _) if self.board.repos.is_empty() => {
+                hero(&theme, "Add a repository to get started".into())
+            }
+            (Some(true), None, _) => hero(&theme, "Pick a workspace, or start a new one".into()),
+            (Some(true), Some(ws), session) => {
+                let repo = self
+                    .board
+                    .repos
+                    .iter()
+                    .find(|r| r.id == ws.repo_id)
+                    .map(|r| r.path.rsplit('/').next().unwrap_or(&r.path).to_owned())
+                    .unwrap_or_default();
+                div()
                     .flex_1()
-                    .pb(px(12.))
-                    .into_any_element(),
-                })
-                .child(self.composer(&theme, &ws.id, cx))
-                .into_any_element(),
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(header(
+                        &theme,
+                        ws,
+                        session.as_ref().map(|s| s.status),
+                        self.header_actions(&theme, cx),
+                    ))
+                    .child(match session {
+                        Some(_) => list(
+                            self.list.clone(),
+                            cx.processor(|this, ix, window, cx| this.render_block(ix, window, cx)),
+                        )
+                        .flex_1()
+                        .pb(px(12.))
+                        .into_any_element(),
+                        None => hero(&theme, format!("What should we build in {repo}?")),
+                    })
+                    .child(self.composer(&theme, &ws.id, cx))
+                    .into_any_element()
+            }
+        };
+        let panel = match (&workspace, self.tab) {
+            (Some(ws), Tab::Diff) if self.online == Some(true) && self.setup.is_none() => {
+                Some(self.right_panel(&theme, &ws.id, cx))
+            }
+            _ => None,
         };
 
         div()
@@ -417,7 +411,7 @@ impl Render for Shell {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.bg)
+            .bg(theme.chrome)
             .text_color(theme.text)
             .font_family(SANS)
             // Any click outside the composer's popover closes it; the popover stops its own clicks.
@@ -430,14 +424,27 @@ impl Render for Shell {
                     }),
                 )
             })
-            .child(title_bar(&theme))
+            .child(title_bar())
+            // Codex's frame: the content sits on a rounded panel inset from the window edges.
+            // GPUI clips to rectangles, so each column rounds its own outer corners.
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
+                    .px(px(6.))
                     .child(self.sidebar(&theme, cx))
-                    .child(div().flex_1().min_w_0().flex().flex_col().child(main)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .bg(theme.bg)
+                            .when(panel.is_none(), |d| d.rounded_r(px(10.)))
+                            .child(main),
+                    )
+                    .when_some(panel, |d, panel| d.child(panel)),
             )
             .child(footer(
                 &theme,
@@ -450,6 +457,8 @@ impl Render for Shell {
 }
 
 impl Shell {
+    /// Codex's sidebar: the app name with search, a few actions with icons, then projects with
+    /// their workspaces indented under them.
     fn sidebar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut column = div()
             .id("sidebar")
@@ -457,17 +466,77 @@ impl Shell {
             .flex_none()
             .h_full()
             .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .rounded_l(px(10.))
             .bg(theme.bg_secondary)
             .border_r(px(HAIRLINE))
             .border_color(theme.border)
-            .pb(px(12.));
+            .px(px(6.))
+            .pb(px(12.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(44.))
+                    .px(px(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(16.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Swarn"),
+                    )
+                    .child(
+                        div()
+                            .id("sidebar-search")
+                            .p(px(4.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.selected))
+                            .child(icon(icons::SEARCH, 15., theme.text_tertiary))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_palette(window, cx)),
+                            ),
+                    ),
+            )
+            .child(
+                nav_row(
+                    theme,
+                    "new-workspace",
+                    icons::SQUARE_PEN,
+                    "New workspace",
+                    false,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.open_new_workspace(window, cx))),
+            )
+            .child(
+                nav_row(
+                    theme,
+                    "pair-phone",
+                    icons::SMARTPHONE,
+                    "Pair a phone",
+                    false,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.open_setup(cx);
+                    this.start_pairing(cx);
+                })),
+            )
+            .child(
+                nav_row(
+                    theme,
+                    "open-setup",
+                    icons::SETTINGS,
+                    "Setup & checks",
+                    self.setup.is_some(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.open_setup(cx))),
+            )
+            .child(label(theme, "Projects").px(px(8.)).pt(px(18.)).pb(px(6.)));
+
         for repo in &self.board.repos {
-            let workspaces: Vec<&Workspace> = self
-                .board
-                .workspaces
-                .iter()
-                .filter(|w| w.repo_id == repo.id)
-                .collect();
             let name = repo
                 .path
                 .rsplit('/')
@@ -476,107 +545,95 @@ impl Shell {
                 .to_owned();
             column = column.child(
                 div()
-                    .px(px(16.))
-                    .pt(px(16.))
-                    .pb(px(6.))
-                    .child(label(theme, name)),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(28.))
+                    .px(px(8.))
+                    .text_size(px(13.5))
+                    .text_color(theme.text)
+                    .child(icon(icons::FOLDER, 15., theme.text_secondary))
+                    .child(div().flex_1().min_w_0().truncate().child(name)),
             );
-            if workspaces.is_empty() {
-                column = column.child(
-                    div()
-                        .px(px(16.))
-                        .py(px(4.))
-                        .text_size(px(12.))
-                        .text_color(theme.text_tertiary)
-                        .child("No workspaces"),
-                );
-            }
-            for ws in workspaces {
+            for ws in self
+                .board
+                .workspaces
+                .iter()
+                .filter(|w| w.repo_id == repo.id)
+            {
                 let status = self.board.workspace_status(&ws.id);
                 let selected = self.selected.as_deref() == Some(ws.id.as_str());
                 let id = ws.id.clone();
-                let hue = theme.status_hue(status);
+                // Only states that want attention get a mark; quiet rows stay quiet, as in Codex.
+                let mark = match status {
+                    Some(Status::Working | Status::Starting) => Some(theme.teal.solid),
+                    Some(Status::NeedsInput) => Some(theme.amber.solid),
+                    Some(Status::Failed) => Some(theme.danger),
+                    _ => None,
+                };
                 column = column.child(
                     div()
                         .id(SharedString::from(format!("ws-{}", ws.id)))
-                        .mx(px(8.))
-                        .px(px(8.))
-                        .py(px(7.))
-                        .rounded(px(6.))
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .when(selected, |d| d.bg(theme.track_bg))
+                        .h(px(28.))
+                        .pl(px(31.))
+                        .pr(px(8.))
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .text_size(px(13.5))
+                        .text_color(if selected {
+                            theme.text
+                        } else {
+                            theme.text_secondary
+                        })
+                        .when(selected, |d| d.bg(theme.selected))
                         .when(!selected, |d| d.hover(|s| s.bg(theme.border_subtle)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.selected = Some(id.clone());
+                            this.setup = None;
+                            this.form = None;
                             cx.notify();
                         }))
-                        .child(div().size(px(7.)).flex_none().rounded_full().bg(hue.solid))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(ws.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .font_family(MONO)
-                                .text_size(px(10.5))
-                                .text_color(if status == Some(Status::NeedsInput) {
-                                    hue.text
-                                } else {
-                                    theme.text_tertiary
-                                })
-                                .child(status_word(status)),
-                        ),
+                        .child(div().flex_1().min_w_0().truncate().child(ws.name.clone()))
+                        .when_some(mark, |d, color| {
+                            d.child(div().size(px(6.)).flex_none().rounded_full().bg(color))
+                        }),
                 );
             }
         }
         column.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .mt(px(12.))
-                .mx(px(8.))
-                .child(
-                    sidebar_action(theme, "new-workspace", "+  New workspace").on_click(
-                        cx.listener(|this, _, window, cx| this.open_new_workspace(window, cx)),
-                    ),
-                )
-                .child(
-                    sidebar_action(theme, "add-repo", "Add repository…")
-                        .on_click(cx.listener(|this, _, _, cx| this.add_repository(cx))),
-                )
-                .child(
-                    sidebar_action(theme, "open-setup", "Setup & checks")
-                        .on_click(cx.listener(|this, _, _, cx| this.open_setup(cx))),
-                ),
+            nav_row(theme, "add-repo", icons::PLUS, "Add repository", false)
+                .text_color(theme.text_tertiary)
+                .mt(px(4.))
+                .on_click(cx.listener(|this, _, _, cx| this.add_repository(cx))),
         )
     }
 }
 
-/// Plexo's accent text action ("Browse…"), as a sidebar row.
-fn sidebar_action(
+/// One sidebar action: an icon and a label on a 28px row, highlighted while its view is open.
+fn nav_row(
     theme: &Theme,
     id: &'static str,
+    svg: &'static [u8],
     text: &'static str,
+    on: bool,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .h(px(28.))
         .px(px(8.))
-        .py(px(6.))
-        .rounded(px(6.))
-        .font_family(MONO)
-        .text_size(px(11.5))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.accent)
-        .hover(|s| s.bg(theme.border_subtle))
+        .rounded(px(8.))
+        .cursor_pointer()
+        .text_size(px(13.5))
+        .text_color(theme.text)
+        .when(on, |d| d.bg(theme.selected))
+        .when(!on, |d| d.hover(|s| s.bg(theme.border_subtle)))
+        .child(icon(svg, 15., theme.text_secondary))
         .child(text)
 }
 
@@ -592,7 +649,8 @@ pub fn status_word(status: Option<Status>) -> &'static str {
     }
 }
 
-/// Above the transcript: workspace name, branch, and a Plexo status pill.
+/// Above the transcript: the workspace name, its branch quieter beside it, a word of status, and
+/// the actions on the right.
 fn header(
     theme: &Theme,
     ws: &Workspace,
@@ -605,10 +663,8 @@ fn header(
         .flex()
         .items_center()
         .gap(px(10.))
-        .px(px(GUTTER))
-        .py(px(12.))
-        .border_b(px(HAIRLINE))
-        .border_color(theme.border)
+        .h(px(46.))
+        .px(px(16.))
         // In a narrow window the branch gives way first, then a long name; the buttons never do.
         .child(
             div()
@@ -617,11 +673,12 @@ fn header(
                 .overflow_hidden()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(8.))
+                .whitespace_nowrap()
                 .child(
                     div()
                         .flex_none()
-                        .max_w(px(240.))
+                        .max_w(px(260.))
                         .truncate()
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
@@ -630,34 +687,29 @@ fn header(
                 .child(
                     div()
                         .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .child(chip(theme, ws.branch.clone())),
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(12.5))
+                        .text_color(theme.text_tertiary)
+                        .child(icon(icons::GIT_BRANCH, 13., theme.text_tertiary))
+                        .child(div().truncate().child(ws.branch.clone())),
                 ),
         )
+        .when(status.is_some(), |d| {
+            d.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(12.5))
+                    .text_color(theme.text_tertiary)
+                    .child(div().size(px(6.)).rounded_full().bg(hue.solid))
+                    .child(status_word(status)),
+            )
+        })
         .child(div().flex_none().child(actions))
-        .child(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(10.))
-                .py(px(4.))
-                .rounded_full()
-                .border(px(1.))
-                .border_color(hue.border)
-                .bg(hue.bg)
-                .child(div().size(px(6.)).rounded_full().bg(hue.solid))
-                .child(
-                    div()
-                        .font_family(MONO)
-                        .text_size(px(10.5))
-                        .line_height(px(10.5))
-                        .text_color(hue.text)
-                        .child(status_word(status).to_uppercase()),
-                ),
-        )
 }
 
 pub fn chip(theme: &Theme, text: impl Into<SharedString>) -> impl IntoElement {
@@ -665,10 +717,8 @@ pub fn chip(theme: &Theme, text: impl Into<SharedString>) -> impl IntoElement {
         .flex_none()
         .px(px(6.))
         .py(px(3.))
-        .rounded(px(4.))
-        .border(px(HAIRLINE))
-        .border_color(theme.border_strong)
-        .bg(theme.bg_secondary)
+        .rounded(px(6.))
+        .bg(theme.track_bg)
         .font_family(MONO)
         .text_size(px(10.5))
         .line_height(px(10.5))
@@ -676,20 +726,12 @@ pub fn chip(theme: &Theme, text: impl Into<SharedString>) -> impl IntoElement {
         .child(text.into())
 }
 
-/// Plexo's title bar: the app name centred on a strip drawn under the native traffic lights.
-fn title_bar(theme: &Theme) -> impl IntoElement {
+/// The frame's top strip, under the native traffic lights. Drags the window; double-click zooms.
+fn title_bar() -> impl IntoElement {
     div()
         .id("title-bar")
         .h(px(TITLE_BAR_HEIGHT))
         .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .px(px(94.))
-        .bg(theme.bg_secondary)
-        .border_b(px(HAIRLINE))
-        .border_color(theme.border)
-        // Plexo drags from the whole strip (`-webkit-app-region: drag`), and double-click zooms.
         .on_mouse_down(MouseButton::Left, |event, window, _| {
             if event.click_count == 2 {
                 window.titlebar_double_click();
@@ -697,61 +739,28 @@ fn title_bar(theme: &Theme) -> impl IntoElement {
                 window.start_window_move();
             }
         })
-        .child(
-            div()
-                .text_size(px(13.))
-                .line_height(px(13.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text_secondary)
-                .child("Swarn"),
-        )
 }
 
-fn empty_state(
-    theme: &Theme,
-    title: &'static str,
-    hint: &'static str,
-    command: Option<&'static str>,
-) -> AnyElement {
+/// Codex's empty canvas: one large, light line in the middle.
+fn hero(theme: &Theme, text: String) -> AnyElement {
     div()
         .flex_1()
         .flex()
-        .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(8.))
+        .px(px(32.))
         .child(
             div()
-                .text_size(px(14.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(title),
+                .text_size(px(26.))
+                .font_weight(FontWeight::LIGHT)
+                .text_color(theme.text)
+                .text_center()
+                .child(text),
         )
-        .child(
-            div()
-                .text_size(px(12.5))
-                .text_color(theme.text_secondary)
-                .child(hint),
-        )
-        .when_some(command, |d, command| {
-            d.child(
-                div()
-                    .mt(px(4.))
-                    .px(px(10.))
-                    .py(px(6.))
-                    .rounded(px(6.))
-                    .border(px(HAIRLINE))
-                    .border_color(theme.border)
-                    .bg(theme.input_bg)
-                    .font_family(MONO)
-                    .text_size(px(11.5))
-                    .text_color(theme.text_secondary)
-                    .child(command),
-            )
-        })
         .into_any_element()
 }
 
-/// Plexo's ScreenFooter: one mono status line on the secondary surface.
+/// One quiet status line on the frame, under the content panel.
 fn footer(
     theme: &Theme,
     online: Option<bool>,
@@ -768,11 +777,7 @@ fn footer(
         (Some(false), _, _) => (theme.danger, "Daemon offline · retrying every 2 s".into()),
         (Some(true), Some(info), _) => (
             theme.success,
-            format!(
-                "{} · swarnd {} · schema {}",
-                info.machine_name, info.version, info.schema_max
-            )
-            .into(),
+            format!("{} · swarnd {}", info.machine_name, info.version).into(),
         ),
         (Some(true), None, _) => (theme.success, "Connected".into()),
     };
@@ -780,18 +785,15 @@ fn footer(
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .px(px(GUTTER))
-        .py(px(8.))
-        .bg(theme.bg_secondary)
-        .border_t(px(HAIRLINE))
-        .border_color(theme.footer_border)
+        .gap(px(7.))
+        .h(px(26.))
+        .px(px(14.))
         .child(div().size(px(6.)).rounded_full().bg(dot))
         .child(
             div()
-                .font_family(MONO)
-                .text_size(px(11.))
+                .text_size(px(11.5))
                 .text_color(theme.text_tertiary)
+                .truncate()
                 .child(text),
         )
 }

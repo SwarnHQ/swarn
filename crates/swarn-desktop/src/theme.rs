@@ -14,8 +14,8 @@ use swarn_core::schema::Status;
 pub const SANS: &str = ".SystemUIFont";
 pub const MONO: &str = "Roboto Mono";
 
-/// macOS title bar height. The traffic lights sit at (16, 9) so their 14px buttons centre in it.
-pub const TITLE_BAR_HEIGHT: f32 = 32.;
+/// Codex's title bar height. The traffic lights sit at (18, 12) so their 14px buttons centre in it.
+pub const TITLE_BAR_HEIGHT: f32 = 38.;
 
 /// Hairline used for every divider and control border (`border-[0.5px]` in Plexo).
 pub const HAIRLINE: f32 = 0.5;
@@ -35,6 +35,10 @@ pub struct Hue {
 
 #[derive(Clone, Copy)]
 pub struct Theme {
+    /// The window frame: title bar and the margin around the content panel.
+    pub chrome: Rgba,
+    /// The selected row in a list.
+    pub selected: Rgba,
     pub bg: Rgba,
     pub bg_secondary: Rgba,
     pub bg_tertiary: Rgba,
@@ -69,59 +73,65 @@ pub struct Theme {
 impl Global for Theme {}
 
 impl Theme {
+    /// Sampled from the Codex desktop app (PRD §5.6): neutral greys, the window frame lighter than
+    /// the sidebar, the sidebar lighter than the canvas.
     pub fn dark() -> Self {
         Self {
-            bg: rgb(0x1b1e20),
-            bg_secondary: rgb(0x202325),
-            bg_tertiary: rgb(0x202325),
-            input_bg: rgb(0x242729),
-            track_bg: rgb(0x262a2d),
-            text: rgb(0xeae7e2),
-            text_secondary: rgb(0xa9adb2),
-            text_tertiary: rgb(0x8d9196),
-            border: rgb(0x2b2f33),
-            border_subtle: rgb(0x23262a),
-            border_strong: rgb(0x33383c),
-            footer_border: rgb(0x2b2f33),
-            icon_muted: rgb(0x33383c),
-            scrollbar_thumb: rgb(0x3a3f44),
-            accent: rgb(0xd8a44c),
-            accent_on_solid: rgb(0x1b1408),
-            success: rgb(0x4ea89a),
-            danger: rgb(0xeda3a3),
-            danger_bg: rgb(0x2c1c1c),
-            danger_border: rgb(0x4a2a2a),
-            teal: hue(0x4ea89a, 0x22312e, 0x3a5450, 0x7fc9bb, 0x10201d),
-            amber: hue(0xd8a44c, 0x33291a, 0x54421f, 0xe8bb6d, 0x221806),
-            steel: hue(0x7e93bd, 0x232a38, 0x3a4660, 0xa7b8db, 0x141a26),
+            chrome: rgb(0x303030),
+            selected: rgb(0x313131),
+            bg: rgb(0x171717),
+            bg_secondary: rgb(0x202020),
+            bg_tertiary: rgb(0x262626),
+            input_bg: rgb(0x242424),
+            track_bg: rgb(0x2f2f2f),
+            text: rgb(0xececec),
+            text_secondary: rgb(0xc4c4c4),
+            text_tertiary: rgb(0x7c7c7c),
+            border: rgb(0x2e2e2e),
+            border_subtle: rgb(0x2a2a2a),
+            border_strong: rgb(0x3a3a3a),
+            footer_border: rgb(0x2e2e2e),
+            icon_muted: rgb(0x5a5a5a),
+            scrollbar_thumb: rgb(0x3a3a3a),
+            accent: rgb(0x3b82f6),
+            accent_on_solid: rgb(0xffffff),
+            success: rgb(0x3fb950),
+            danger: rgb(0xf47174),
+            danger_bg: rgb(0x2a1818),
+            danger_border: rgb(0x4a2424),
+            teal: hue(0x3fb950, 0x1c2a1f, 0x2d4733, 0x7ad48c, 0x0f1a12),
+            amber: hue(0xf5b833, 0x2f2814, 0x4d3f1a, 0xf7c95c, 0x221806),
+            steel: hue(0x9a9a9a, 0x262626, 0x3a3a3a, 0xc4c4c4, 0x171717),
         }
     }
 
     pub fn light() -> Self {
         Self {
+            chrome: rgb(0xe9e9eb),
+            selected: rgb(0xe6e6e8),
             bg: rgb(0xffffff),
-            bg_secondary: rgb(0xfafafa),
-            bg_tertiary: rgb(0xf0f0f0),
-            input_bg: rgb(0xffffff),
-            track_bg: rgb(0xe4e4e6),
+            bg_secondary: rgb(0xf7f7f8),
+            bg_tertiary: rgb(0xf0f0f1),
+            input_bg: rgb(0xf4f4f5),
+            track_bg: rgb(0xededef),
             text: rgb(0x1d1d1f),
-            text_secondary: rgb(0x6e6e73),
-            text_tertiary: rgb(0x737377),
-            border: rgb(0xe0e0e2),
-            border_subtle: rgb(0xececee),
-            border_strong: rgb(0xb9b9bb),
-            footer_border: rgb(0xd8d8da),
-            icon_muted: rgb(0xc2c2c6),
+            text_secondary: rgb(0x3f3f46),
+            text_tertiary: rgb(0x8a8a90),
+            border: rgb(0xe4e4e7),
+            border_subtle: rgb(0xeeeef0),
+            border_strong: rgb(0xd4d4d8),
+            footer_border: rgb(0xe4e4e7),
+            icon_muted: rgb(0xb4b4ba),
             scrollbar_thumb: rgb(0xd0d0d2),
-            accent: rgb(0xd97706),
+            accent: rgb(0x2563eb),
             accent_on_solid: rgb(0xffffff),
-            success: rgb(0x1f8a70),
+            success: rgb(0x1a7f37),
             danger: rgb(0xdc2626),
             danger_bg: rgb(0xfef2f2),
             danger_border: rgb(0xfecaca),
-            teal: hue(0x1f8a70, 0xe6f6f2, 0xb8e6dc, 0x0e6b54, 0xffffff),
-            amber: hue(0xd97706, 0xfef3c7, 0xfde68a, 0x92400e, 0xffffff),
-            steel: hue(0x4f64a5, 0xedf0f8, 0xcbd3ed, 0x374984, 0xffffff),
+            teal: hue(0x1a7f37, 0xe8f5ec, 0xbfe3c9, 0x116329, 0xffffff),
+            amber: hue(0xd99a06, 0xfef6e0, 0xf6df9e, 0x8a5a00, 0xffffff),
+            steel: hue(0x71717a, 0xf4f4f5, 0xe4e4e7, 0x3f3f46, 0xffffff),
         }
     }
 
@@ -194,15 +204,13 @@ impl Theme {
     }
 }
 
-/// Plexo's small-caps section label: mono, uppercase, tertiary. GPUI has no letter-spacing, so
-/// the tracking Plexo adds is missing here.
+/// A section label as Codex draws them ("Projects"): sentence case, quiet, the interface font.
 pub fn label(theme: &Theme, text: impl Into<SharedString>) -> Div {
     div()
-        .font_family(MONO)
-        .text_size(px(10.5))
-        .line_height(px(10.5))
+        .text_size(px(12.5))
+        .line_height(px(14.))
         .text_color(theme.text_tertiary)
-        .child(text.into().to_uppercase())
+        .child(text.into())
 }
 
 #[derive(Clone, Copy)]
@@ -212,7 +220,7 @@ pub enum ButtonKind {
     Destructive,
 }
 
-/// Plexo's shadcn button at its default size: 32px tall, 8px radius, 14px medium text.
+/// A button at Codex's size: 28px tall, 8px radius, 13px medium text.
 pub fn button(
     theme: &Theme,
     id: impl Into<ElementId>,
@@ -220,14 +228,15 @@ pub fn button(
     kind: ButtonKind,
 ) -> Stateful<Div> {
     let (bg, fg, border) = match kind {
-        ButtonKind::Primary => (theme.accent, theme.accent_on_solid, theme.accent),
-        ButtonKind::Secondary => (theme.bg_tertiary, theme.text, theme.border),
+        // Codex's primary action is the foreground colour as a fill: white in dark, black in light.
+        ButtonKind::Primary => (theme.text, theme.bg, theme.text),
+        ButtonKind::Secondary => (theme.track_bg, theme.text, theme.track_bg),
         ButtonKind::Destructive => (theme.danger_bg, theme.danger, theme.danger_border),
     };
     div()
         .id(id)
-        .h(px(32.))
-        .px(px(12.))
+        .h(px(28.))
+        .px(px(11.))
         .flex()
         .items_center()
         .justify_center()
@@ -236,7 +245,7 @@ pub fn button(
         .border_color(border)
         .bg(bg)
         .text_color(fg)
-        .text_size(px(14.))
+        .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
         .hover(|s| s.opacity(0.85))
         .active(|s| s.opacity(0.7))

@@ -12,7 +12,7 @@ use swarn_core::local_api::{self, ApprovalMode};
 use swarn_core::schema::{Status, Workspace};
 
 use crate::icons::{self, icon};
-use crate::shell::{GUTTER, Shell};
+use crate::shell::{COLUMN, GUTTER, Shell};
 use crate::theme::{ButtonKind, HAIRLINE, MONO, Theme, button, label};
 
 pub const AGENTS: [(&str, &str); 2] = [("claude-code", "Claude"), ("codex", "Codex")];
@@ -293,12 +293,11 @@ impl Shell {
             .child(self.model_button(theme, workspace_id, cx))
             .child(send);
 
-        div()
-            .flex_none()
+        // The same centred column as the transcript; the popover anchors to it.
+        let column = div()
+            .w_full()
+            .max_w(px(COLUMN))
             .relative()
-            .px(px(GUTTER))
-            .pt(px(10.))
-            .pb(px(14.))
             .child(strip)
             .child(
                 div()
@@ -321,7 +320,15 @@ impl Shell {
             )
             .when(self.effort_open, |d| {
                 d.child(gpui::deferred(self.effort_popover(theme, workspace_id, cx)))
-            })
+            });
+        div()
+            .flex_none()
+            .flex()
+            .justify_center()
+            .px(px(GUTTER))
+            .pt(px(10.))
+            .pb(px(14.))
+            .child(column)
             .into_any_element()
     }
 
@@ -478,8 +485,8 @@ impl Shell {
             .id("effort-popover")
             .occlude()
             .absolute()
-            .right(px(GUTTER + 44.))
-            .bottom(px(112.))
+            .right(px(44.))
+            .bottom(px(98.))
             .w(px(272.))
             .flex()
             .flex_col()

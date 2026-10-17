@@ -182,7 +182,7 @@ impl Shell {
 
     /// Picking an item dispatches its action, which `register_handlers` catches; the palette only
     /// has to close itself.
-    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = cx.new(|cx| CommandState::new(window, cx));
         // The search field only knows it's searchable after its first render, so focus it then;
         // otherwise typing goes nowhere.
