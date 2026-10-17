@@ -694,17 +694,46 @@ The model is unchanged: blocks built off the main thread, GPUI `list`, 16 ms bat
 
 ### 5.8 Composer and approvals
 
-- **The input** grows from one line to 12. Its placeholder is "Ask to make changes, @mention files, run /commands".
+The composer's design follows a reference the team chose on 17 Oct 2026, the composer in OpenAI's Codex desktop app. As with §5.6, only the arrangement is copied; colours, type and controls come from `theme.rs`.
+
+```
+      ╭ ▢ swarn   ▭ This Mac ──────────────────────────────────── ⚙ ╮   context strip
+╭─────┴──────────────────────────────────────────────────────────────┴─╮
+│ Do anything                                                           │   input
+│                                                                       │
+│ +   ☺ Approve for me   ⚓•                 Opus 5.5 High ⌄   🎙   (●)  │   toolbar
+╰───────────────────────────────────────────────────────────────────────╯
+```
+
+- **Context strip.** A tab joined to the top of the input, one step darker (`bg_secondary` on `bg_tertiary`), holding two chips and a gear:
+  - **Project** (folder icon) is the repo, or the workspace once one exists. In Create and on Home it opens a picker, which is how a prompt typed there becomes a new workspace. Inside a workspace it is a label.
+  - **Machine** (laptop icon) is where the agent runs. It reads "This Mac" until remote daemons exist (v0.3), and then shares its list with the sidebar's machine switcher (§5.6).
+  - **The gear** opens composer settings: default agent, Enter or Cmd-Enter to send, and whether messages sent mid-turn queue or steer.
+- **Input.**
+  - The placeholder is "Do anything" with no session, and "Ask for changes, @mention files, run /commands" inside one.
+  - It grows from one line to 12.
   - `@` opens a fuzzy file picker over the worktree (`git ls-files`).
-  - `/` lists the agent's own slash commands, read from Claude's `init` message or Codex's command list, plus Swarn's own commands.
+  - `/` lists the agent's own slash commands, read from Claude's `init` message or Codex's command list, plus Swarn's own.
   - Images can be pasted or dropped.
   - Each workspace keeps a draft that survives restarts.
   - With the input empty, the up arrow walks back through sent prompts.
-- **The toolbar:**
-  - The model and effort picker, "Opus 5.5 High ▾". It replaces the cycling chip from week 7 and lists what `agent.models` returns.
-  - A context ring fed by `usage.context_pct`. It is hidden when the agent doesn't report usage, because a missing meter renders as absent (§3.2).
-  - Attach.
-  - Send, which becomes Stop while a turn runs. Stop ignores a double click, so the second click of a double-click can't cancel the turn it just started.
+- **Toolbar, left to right:**
+  - **"+"** attaches files or images.
+  - **Approve for me** is the approval policy as a single toggle. Off (the default) means "ask before writes and commands". On means "allow edits, ask before commands", which is the `allow_edits` mode in `policy.toml` (§2.6). Its icon fills with `amber` while on, so the relaxed state is visible at a glance. A mode change takes effect on the next turn (§4.2). The full three-way choice stays in Setup.
+  - **A status glyph with a dot** shows background state that needs a look without interrupting the prompt: a setup script still running, a check that failed, a phone that disconnected. Clicking it opens a short list. The dot is `amber` for attention and absent otherwise.
+  - **Model and effort,** read as one phrase, "Opus 5.5 High ⌄", with the model in `text` and the effort in `text_secondary`. Clicking it opens a popover above the button:
+    - The effort level as a title in `accent`.
+    - The model name with "›", which opens the model list from `agent.models`.
+    - A slider with one stop per effort the model supports, filled in `accent` up to the current stop with a white thumb.
+    - A lightning toggle on the left for fast mode, where the agent has one.
+    - A reset icon on the right that returns to the agent's default.
+    While the popover is open the button reads "Select effort". Claude takes `--effort` (`low`, `medium`, `high`, `xhigh`, `max`). Codex takes the effort on `turn/start`, from the list each model reports. The choice is per workspace and sent with the next turn, so changing it never restarts a running turn.
+  - **Microphone:** dictation through macOS speech recognition into the input, as text the user edits before sending. v0.2.
+  - **The round button** at the far right is the primary action. It's white on `bg`:
+    - Empty input: the waveform for voice mode (v0.3).
+    - Any text: an up arrow that sends.
+    - A turn running: a square that stops. It ignores a double click, so the second click can't cancel the turn the first one started.
+  - **The context ring** sits just left of the microphone, fed by `usage.context_pct`. It is hidden when the agent doesn't report usage, because a missing meter renders as absent (§3.2).
 - **Sending while the agent works queues the message.** Queued messages show as cards above the input with Edit, Delete and Send now. They go out in order when the turn ends, and Stop pauses the queue. Send now steers: Claude takes the message mid-turn through its stream-json input, and Codex through `turn/steer` (§4.2).
 - **Pending approvals take the composer's place** instead of sitting in the transcript, so the thing that needs an answer is where the user is already looking.
   - The card shows the tool, a summary, the full input or diff (`max_h` 288 px), and the policy's reason.
@@ -882,7 +911,7 @@ The layout in §5.6 to §5.9 lands in five steps after v0.1. Each step ships on 
 | Step | What | Daemon work | Done when |
 | --- | --- | --- | --- |
 | L1 | Transcript rules from §5.7: tool runs as sentences, folded turns, meta lines, interrupted chips, the live line, following only until a reader's gesture, Jump to latest | `outcome` and `duration_ms` on `agent_message_end`; coalesced snapshots; bounded tool output | A 2,000-call Codex session reads as a dozen rows, and p99 frame time stays under 8.3 ms while it streams |
-| L2 | Composer from §5.8: model and effort picker, `@` files, `/` commands, drafts, history, the queue with Send now, approvals in the composer's place with number keys | `delivery` on `user_message`; the daemon-held queue; steering for both CLIs | A message sent mid-turn is delivered after the turn or steered into it, from the desktop and from the phone |
+| L2 | Composer from §5.8: context strip, Approve for me, the model and effort popover, `@` files, `/` commands, drafts, history, the queue with Send now, approvals in the composer's place with number keys | `delivery` on `user_message`; per-turn effort for both CLIs; the daemon-held queue; steering for both CLIs | A message sent mid-turn is delivered after the turn or steered into it, from the desktop and from the phone |
 | L3 | Sidebar and header from §5.6: Home inbox, Create, Search, repo groups with diff stats, agent-written titles, tabs per session, Open in, back and forward, Next unread, the message rail | `title_changed`; FTS5 search over message text; editor detection | A user with ten workspaces finds the one that needs them without reading the sidebar line by line |
 | L4 | Right panel from §5.9: PR header with the state-driven action, All files, Changes, Checks with git status, Pull, and CI checks | `checks` events from `gh pr checks`; Commit and push with an agent-written message; Pull | A workspace goes from first prompt to merged PR without leaving the window |
 | L5 | Dock: Setup and Run output, attributed ports, then the terminal | Port attribution; daemon-owned PTYs | A dev server started from Run opens from its port link, and a terminal survives quitting the app |
