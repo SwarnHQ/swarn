@@ -10,7 +10,8 @@ use gpui::{
 };
 use swarn_core::schema::Status;
 
-pub const SANS: &str = "Manrope";
+/// SF Pro, through the name macOS gives its system UI font. Manrope stays bundled while we compare.
+pub const SANS: &str = ".SystemUIFont";
 pub const MONO: &str = "Roboto Mono";
 
 /// macOS title bar height. The traffic lights sit at (16, 9) so their 14px buttons centre in it.
