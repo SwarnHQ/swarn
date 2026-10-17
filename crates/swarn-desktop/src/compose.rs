@@ -8,9 +8,10 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use swarn_core::local_api;
+use swarn_core::local_api::{self, ApprovalMode};
 use swarn_core::schema::{Status, Workspace};
 
+use crate::icons::{self, icon};
 use crate::shell::{GUTTER, Shell};
 use crate::theme::{ButtonKind, HAIRLINE, MONO, Theme, button, label};
 
@@ -25,13 +26,16 @@ pub struct NewWorkspace {
 pub fn composer_state(window: &mut Window, cx: &mut Context<Shell>) -> Entity<TextareaState> {
     let state = cx.new(|cx| {
         TextareaState::new(window, cx)
-            .auto_grow(1, 8)
-            .placeholder("Tell the agent what to do. Enter sends, Shift-Enter adds a line.")
+            .auto_grow(1, 12)
+            .placeholder("Do anything")
             .submit_on_enter(true)
     });
     cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| {
-        if let InputEvent::PressEnter { shift: false, .. } = event {
-            this.submit(window, cx);
+        match event {
+            InputEvent::PressEnter { shift: false, .. } => this.submit(window, cx),
+            // The send button dims while the input is empty.
+            InputEvent::Change => cx.notify(),
+            _ => {}
         }
     })
     .detach();
@@ -52,15 +56,21 @@ impl Shell {
         self.composer
             .update(cx, |state, cx| state.set_value("", window, cx));
         let (method, params) = match self.live_session(&workspace_id) {
-            Some(session_id) => (
-                "session.prompt",
-                json!({ "session_id": session_id, "text": text }),
-            ),
+            Some(session_id) => {
+                let agent = self.composer_agent(&workspace_id);
+                (
+                    "session.prompt",
+                    json!({ "session_id": session_id, "text": text, "effort": self.effort.get(agent) }),
+                )
+            }
             None => {
                 let mut params =
                     json!({ "workspace_id": workspace_id, "prompt": text, "agent": self.agent });
                 if let Some(model) = self.chosen_model(self.agent) {
                     params["model"] = json!(model);
+                }
+                if let Some(effort) = self.effort.get(self.agent) {
+                    params["effort"] = json!(effort);
                 }
                 ("session.start", params)
             }
@@ -186,76 +196,464 @@ impl Shell {
         .detach();
     }
 
-    /// The bar under the transcript: a growing text area, the agent choice when it starts a new
-    /// session, Stop while the agent works, and Send.
+    /// The composer, after the Codex desktop app's (PRD §5.8): a context strip joined to the top
+    /// of the input, then the input, then a toolbar with Approve for me, the model and effort
+    /// control, and one round button that sends or stops.
     pub(crate) fn composer(
         &self,
         theme: &Theme,
         workspace_id: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let session = self.board.latest_session(workspace_id);
-        let live = self.live_session(workspace_id).is_some();
-        let working = session.is_some_and(|s| {
+        let working = self.board.latest_session(workspace_id).is_some_and(|s| {
             matches!(
                 s.status,
                 Status::Working | Status::NeedsInput | Status::Starting
             )
         });
+        let empty = self.composer.read(cx).value().trim().is_empty();
+        let repo = self
+            .board
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .and_then(|w| self.board.repos.iter().find(|r| r.id == w.repo_id))
+            .map(|r| r.path.rsplit('/').next().unwrap_or(&r.path).to_owned())
+            .unwrap_or_default();
 
-        let mut actions = div().flex().items_center().gap(px(8.));
-        if live {
-            let agent = session.map(|s| s.agent.as_str()).unwrap_or_default();
-            let name = AGENTS
-                .iter()
-                .find(|(id, _)| *id == agent)
-                .map_or(agent, |(_, n)| n);
-            actions = actions.child(label(theme, name));
-        } else {
-            actions = actions.child(self.agent_toggle(theme, cx));
-            actions = actions.child(self.model_chip(theme, cx));
-        }
-        actions = actions.child(div().flex_1());
-        if working {
-            actions = actions.child(
-                button(theme, "stop", "Stop", ButtonKind::Secondary)
-                    .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
+        let chip = |svg: &'static [u8], text: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(12.5))
+                .text_color(theme.text_secondary)
+                .child(icon(svg, 14., theme.text_secondary))
+                .child(text)
+        };
+        let strip = div()
+            .mx(px(14.))
+            .flex()
+            .items_center()
+            .gap(px(18.))
+            .px(px(12.))
+            .h(px(32.))
+            .rounded_t(px(10.))
+            .border(px(HAIRLINE))
+            .border_b(px(0.))
+            .border_color(theme.border)
+            .bg(theme.input_bg)
+            .child(chip(icons::FOLDER, repo))
+            .child(chip(icons::LAPTOP, "This Mac".into()))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("composer-settings")
+                    .cursor_pointer()
+                    .child(icon(icons::SETTINGS, 14., theme.text_tertiary))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_setup(cx))),
             );
-        }
-        actions = actions.child(
-            button(
-                theme,
-                "send",
-                if live { "Send" } else { "Start" },
-                ButtonKind::Primary,
-            )
-            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
-        );
+
+        let send = div()
+            .id("composer-send")
+            .size(px(30.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(theme.text)
+            .when(empty && !working, |d| d.opacity(0.35))
+            .cursor_pointer()
+            .child(if working && empty {
+                icon(icons::SQUARE, 12., theme.bg)
+            } else {
+                icon(icons::ARROW_UP, 16., theme.bg)
+            })
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    // The second click of a double click must not stop the turn the first one started.
+                    if event.click_count() > 1 {
+                        return;
+                    }
+                    if working && this.composer.read(cx).value().trim().is_empty() {
+                        this.stop(cx);
+                    } else {
+                        this.submit(window, cx);
+                    }
+                }),
+            );
+
+        let toolbar = div()
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .child(self.approve_for_me(theme, cx))
+            .child(div().flex_1())
+            .child(self.model_button(theme, workspace_id, cx))
+            .child(send);
 
         div()
             .flex_none()
+            .relative()
             .px(px(GUTTER))
-            .py(px(12.))
-            .border_t(px(HAIRLINE))
-            .border_color(theme.border)
+            .pt(px(10.))
+            .pb(px(14.))
+            .child(strip)
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
-                    .p(px(10.))
-                    .rounded(px(10.))
-                    .border(px(1.))
+                    .gap(px(10.))
+                    .px(px(14.))
+                    .pt(px(12.))
+                    .pb(px(10.))
+                    .rounded(px(14.))
+                    .border(px(HAIRLINE))
                     .border_color(theme.border_strong)
-                    .bg(theme.input_bg)
+                    .bg(theme.track_bg)
                     .child(
                         Textarea::new(&self.composer)
                             .appearance(false)
-                            .text_size(px(13.5)),
+                            .text_size(px(14.)),
                     )
-                    .child(actions),
+                    .child(toolbar),
             )
+            .when(self.effort_open, |d| {
+                d.child(gpui::deferred(self.effort_popover(theme, workspace_id, cx)))
+            })
             .into_any_element()
+    }
+
+    /// The approval policy as one toggle: off asks before writes and commands, on lets edits
+    /// through and still asks before commands. Takes effect from the next session.
+    fn approve_for_me(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let on = self
+            .policy
+            .as_ref()
+            .is_some_and(|p| p.approvals.mode == ApprovalMode::AllowEdits);
+        let color = if on {
+            theme.amber.text
+        } else {
+            theme.text_tertiary
+        };
+        div()
+            .id("approve-for-me")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .text_size(px(13.))
+            .text_color(color)
+            .hover(|s| s.text_color(theme.text_secondary))
+            .child(icon(icons::SHIELD, 15., color))
+            .child("Approve for me")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_policy(
+                    |p| {
+                        p.approvals.mode = if on {
+                            ApprovalMode::Ask
+                        } else {
+                            ApprovalMode::AllowEdits
+                        }
+                    },
+                    cx,
+                );
+                this.notice = Some(if on {
+                    "New sessions ask before writes and commands".into()
+                } else {
+                    "New sessions make edits without asking, and still ask before commands".into()
+                });
+            }))
+    }
+
+    /// The agent driving this composer: the live session's, else the one picked for a new session.
+    fn composer_agent(&self, workspace_id: &str) -> &'static str {
+        match self.live_session(workspace_id) {
+            Some(_) => {
+                let agent = self
+                    .board
+                    .latest_session(workspace_id)
+                    .map(|s| s.agent.as_str());
+                AGENTS
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .find(|id| Some(*id) == agent)
+                    .unwrap_or(self.agent)
+            }
+            None => self.agent,
+        }
+    }
+
+    fn picked_model(&self, agent: &str) -> Option<&Value> {
+        let models = self.models.get(agent)?;
+        models.get(self.model_pick.get(agent).copied().unwrap_or(0))
+    }
+
+    /// "Opus High ⌄": the model in full text, the effort quieter, one control for both.
+    fn model_button(
+        &self,
+        theme: &Theme,
+        workspace_id: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let agent = self.composer_agent(workspace_id);
+        let agent_name = AGENTS
+            .iter()
+            .find(|(id, _)| *id == agent)
+            .map_or("", |(_, n)| n);
+        // The agent's own default reads as the agent's name; a picked model names itself.
+        let model = self
+            .picked_model(agent)
+            .filter(|m| !m["id"].is_null())
+            .and_then(|m| m["label"].as_str())
+            .unwrap_or(agent_name)
+            .to_owned();
+        let effort = self.effort.get(agent).map(|e| effort_label(e));
+        div()
+            .id("model-button")
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .h(px(28.))
+            .px(px(10.))
+            .rounded_full()
+            .cursor_pointer()
+            .text_size(px(13.))
+            .hover(|s| s.bg(theme.border_subtle))
+            .when(self.effort_open, |d| d.bg(theme.border_subtle))
+            .when(self.effort_open, |d| {
+                d.child(
+                    div()
+                        .text_color(theme.text_secondary)
+                        .child("Select effort"),
+                )
+            })
+            .when(!self.effort_open, |d| {
+                d.child(div().text_color(theme.text).child(model))
+                    .when_some(effort, |d, e| {
+                        d.child(div().text_color(theme.text_secondary).child(e))
+                    })
+            })
+            .child(icon(icons::CHEVRON_DOWN, 14., theme.text_tertiary))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.effort_open = !this.effort_open;
+                    this.model_list_open = false;
+                    cx.notify();
+                }),
+            )
+    }
+
+    /// Above the model button: the effort as a title, the model with a way into the model list,
+    /// a slider with one stop per effort, and reset to the agent's default.
+    fn effort_popover(
+        &self,
+        theme: &Theme,
+        workspace_id: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let agent = self.composer_agent(workspace_id);
+        let live = self.live_session(workspace_id).is_some();
+        let model = self.picked_model(agent);
+        let model_name = model.and_then(|m| m["label"].as_str()).unwrap_or("Default");
+        let efforts: Vec<String> = model
+            .and_then(|m| m["efforts"].as_array())
+            .map(|e| {
+                e.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let current = self
+            .effort
+            .get(agent)
+            .and_then(|e| efforts.iter().position(|x| x == e));
+        // Claude reads its effort only at start; Codex takes it on every turn (PRD §5.8).
+        let fixed = live && agent == "claude-code";
+
+        let mut panel = div()
+            .id("effort-popover")
+            .occlude()
+            .absolute()
+            .right(px(GUTTER + 44.))
+            .bottom(px(112.))
+            .w(px(272.))
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .p(px(12.))
+            .rounded(px(14.))
+            .border(px(HAIRLINE))
+            .border_color(theme.border_strong)
+            .bg(theme.track_bg)
+            .shadow_lg()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
+
+        if self.model_list_open {
+            for (agent_id, agent_name) in AGENTS {
+                if live && agent_id != agent {
+                    continue;
+                }
+                panel = panel.child(label(theme, agent_name));
+                for (ix, m) in self.models.get(agent_id).into_iter().flatten().enumerate() {
+                    let on = agent_id == agent
+                        && self.model_pick.get(agent_id).copied().unwrap_or(0) == ix;
+                    panel = panel.child(
+                        div()
+                            .id(SharedString::from(format!("model-{agent_id}-{ix}")))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .px(px(8.))
+                            .h(px(28.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_size(px(13.))
+                            .text_color(if on { theme.text } else { theme.text_secondary })
+                            .hover(|s| s.bg(theme.border_subtle))
+                            .child(m["label"].as_str().unwrap_or("Default").to_owned())
+                            .when(on, |d| d.child(icon(icons::CHECK, 14., theme.accent)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.agent = agent_id;
+                                this.model_pick.insert(agent_id, ix);
+                                this.effort.remove(agent_id);
+                                this.model_list_open = false;
+                                cx.notify();
+                            })),
+                    );
+                }
+            }
+            return panel;
+        }
+
+        let title = current.map_or("Default effort".to_owned(), |i| effort_label(&efforts[i]));
+        panel = panel.child(
+            div()
+                .flex()
+                .items_start()
+                .child(div().size(px(16.)))
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.accent)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .id("open-model-list")
+                                .flex()
+                                .items_center()
+                                .gap(px(2.))
+                                .text_size(px(12.5))
+                                .text_color(theme.text_secondary)
+                                .when(!live, |d| {
+                                    d.cursor_pointer()
+                                        .hover(|s| s.text_color(theme.text))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.model_list_open = true;
+                                            cx.notify();
+                                        }))
+                                })
+                                .child(model_name.to_owned())
+                                .when(!live, |d| {
+                                    d.child(icon(icons::CHEVRON_RIGHT, 12., theme.text_tertiary))
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("effort-reset")
+                        .cursor_pointer()
+                        .child(icon(icons::ROTATE, 15., theme.text_tertiary))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.effort.remove(agent);
+                            cx.notify();
+                        })),
+                ),
+        );
+
+        if efforts.is_empty() {
+            return panel.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme.text_tertiary)
+                    .child("This model doesn't offer effort levels."),
+            );
+        }
+        let n = efforts.len() as f32;
+        let mut track = div()
+            .relative()
+            .flex()
+            .h(px(30.))
+            .rounded_full()
+            .bg(theme.bg)
+            .when(fixed, |d| d.opacity(0.5));
+        if let Some(i) = current {
+            track = track.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .h_full()
+                    .w(gpui::relative((i as f32 + 0.5) / n))
+                    .min_w(px(30.))
+                    .rounded_full()
+                    .bg(theme.accent),
+            );
+        }
+        for (ix, effort) in efforts.iter().enumerate() {
+            let filled = current.is_some_and(|c| ix < c);
+            let effort = effort.clone();
+            track = track.child(
+                div()
+                    .id(SharedString::from(format!("effort-{ix}")))
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(!fixed, |d| d.cursor_pointer())
+                    .child(if current == Some(ix) {
+                        div()
+                            .size(px(24.))
+                            .rounded_full()
+                            .bg(gpui::white())
+                            .shadow_sm()
+                    } else {
+                        div().size(px(4.)).rounded_full().bg(if filled {
+                            theme.accent_on_solid
+                        } else {
+                            theme.text_tertiary
+                        })
+                    })
+                    .when(!fixed, |d| {
+                        d.on_click(cx.listener(move |this, _, _, cx| {
+                            this.effort.insert(agent, effort.clone());
+                            cx.notify();
+                        }))
+                    }),
+            );
+        }
+        panel.child(track).when(fixed, |d| {
+            d.child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(theme.text_tertiary)
+                    .child(
+                        "Claude sets effort when a session starts. This applies to the next one.",
+                    ),
+            )
+        })
     }
 
     /// Asks the daemon once what each agent can run.
@@ -280,78 +678,6 @@ impl Shell {
         let models = self.models.get(agent)?;
         let pick = self.model_pick.get(agent).copied().unwrap_or(0);
         models.get(pick)?["id"].as_str().map(str::to_owned)
-    }
-
-    /// Plexo's cyclable chip: click to step through the agent's models.
-    fn model_chip(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let agent = self.agent;
-        let models = self.models.get(agent).cloned().unwrap_or_default();
-        let pick = self
-            .model_pick
-            .get(agent)
-            .copied()
-            .unwrap_or(0)
-            .min(models.len().saturating_sub(1));
-        let name = models
-            .get(pick)
-            .and_then(|m| m["label"].as_str())
-            .unwrap_or("Default")
-            .to_owned();
-        div()
-            .id("model-chip")
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .h(px(26.))
-            .px(px(8.))
-            .rounded(px(6.))
-            .border(px(HAIRLINE))
-            .border_color(theme.border)
-            .font_family(MONO)
-            .text_size(px(11.))
-            .text_color(theme.text_secondary)
-            .hover(|s| s.bg(theme.border_subtle))
-            .when(models.len() > 1, |d| {
-                d.on_click(cx.listener(move |this, _, _, cx| {
-                    let next = (this.model_pick.get(agent).copied().unwrap_or(0) + 1)
-                        % models.len().max(1);
-                    this.model_pick.insert(agent, next);
-                    cx.notify();
-                }))
-            })
-            .child(div().text_color(theme.text_tertiary).child("MODEL"))
-            .child(name)
-    }
-
-    /// Plexo's segmented toggle (its MB/s | Mbps switch), here choosing the agent.
-    fn agent_toggle(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .h(px(26.))
-            .p(px(2.))
-            .gap(px(2.))
-            .rounded(px(6.))
-            .border(px(HAIRLINE))
-            .border_color(theme.border)
-            .children(AGENTS.iter().map(|(id, name)| {
-                let on = self.agent == *id;
-                div()
-                    .id(SharedString::from(format!("agent-{id}")))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(4.))
-                    .font_family(MONO)
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if on { theme.text } else { theme.text_tertiary })
-                    .when(on, |d| d.bg(theme.track_bg))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.agent = id;
-                        cx.notify();
-                    }))
-                    .child(*name)
-            }))
     }
 
     /// Plexo's form rows (its LINK / TO boxes), for creating a workspace.
@@ -445,5 +771,18 @@ impl Shell {
                     ),
             )
             .into_any_element()
+    }
+}
+
+/// "xhigh" reads as "Extra High" in the control, as in the reference.
+fn effort_label(effort: &str) -> String {
+    match effort {
+        "xhigh" => "Extra High".into(),
+        e => {
+            let mut c = e.chars();
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect())
+                .unwrap_or_default()
+        }
     }
 }

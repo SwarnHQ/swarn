@@ -1,6 +1,7 @@
 mod bench;
 mod compose;
 mod diff;
+mod icons;
 mod markdown;
 mod model;
 mod notify;

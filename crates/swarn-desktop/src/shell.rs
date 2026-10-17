@@ -57,6 +57,12 @@ pub struct Shell {
     /// What each agent can run, from the daemon, and which one the composer has picked.
     pub(crate) models: HashMap<&'static str, Vec<serde_json::Value>>,
     pub(crate) model_pick: HashMap<&'static str, usize>,
+    /// Reasoning effort per agent; None is the agent's own default.
+    pub(crate) effort: HashMap<&'static str, String>,
+    /// The composer's model and effort popover, and whether it shows the model list.
+    pub(crate) effort_open: bool,
+    pub(crate) model_list_open: bool,
+    pub(crate) policy: Option<swarn_core::local_api::Policy>,
     /// The first-run checklist opens by itself once, on a daemon with no repositories yet.
     pub(crate) setup_seen: bool,
     /// Whether the background helper is registered; checked while the daemon is unreachable.
@@ -163,6 +169,10 @@ impl Shell {
             pairing: None,
             models: HashMap::new(),
             model_pick: HashMap::new(),
+            effort: HashMap::new(),
+            effort_open: false,
+            model_list_open: false,
+            policy: None,
             setup_seen: false,
             service: Service::NotBundled,
         };
@@ -202,6 +212,7 @@ impl Shell {
         }
         if lists.is_some() && self.models.is_empty() {
             self.load_models(cx);
+            self.load_policy(cx);
         }
         if lists.is_some() {
             crate::bench::connected();
@@ -409,6 +420,16 @@ impl Render for Shell {
             .bg(theme.bg)
             .text_color(theme.text)
             .font_family(SANS)
+            // Any click outside the composer's popover closes it; the popover stops its own clicks.
+            .when(self.effort_open, |d| {
+                d.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.effort_open = false;
+                        cx.notify();
+                    }),
+                )
+            })
             .child(title_bar(&theme))
             .child(
                 div()

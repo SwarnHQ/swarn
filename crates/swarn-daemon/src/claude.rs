@@ -33,7 +33,7 @@ pub struct Claude {
 }
 
 impl Claude {
-    pub fn args(&self, model: Option<&str>) -> Vec<String> {
+    pub fn args(&self, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
         let mut args: Vec<String> = ARGS.iter().map(|a| (*a).to_owned()).collect();
         let mode = match self.mode {
             ApprovalMode::Ask => "manual",
@@ -42,6 +42,9 @@ impl Claude {
         args.extend(["--permission-mode".to_owned(), mode.to_owned()]);
         if let Some(model) = model {
             args.extend(["--model".to_owned(), model.to_owned()]);
+        }
+        if let Some(effort) = effort {
+            args.extend(["--effort".to_owned(), effort.to_owned()]);
         }
         args
     }
@@ -197,6 +200,21 @@ mod tests {
 
     /// Trimmed and anonymised from a real Claude Code 2.1.300 run (docs/cli-behaviour.md).
     const TRANSCRIPT: &str = include_str!("../tests/fixtures/claude-2.1.300.jsonl");
+
+    #[test]
+    fn model_and_effort_become_flags_only_when_picked() {
+        let claude = Claude::default();
+        let args = claude.args(Some("opus"), Some("xhigh")).join(" ");
+        assert!(
+            args.contains("--model opus") && args.contains("--effort xhigh"),
+            "{args}"
+        );
+        let args = claude.args(None, None).join(" ");
+        assert!(
+            !args.contains("--model") && !args.contains("--effort"),
+            "{args}"
+        );
+    }
 
     #[test]
     fn recorded_transcript_maps_to_the_expected_actions() {

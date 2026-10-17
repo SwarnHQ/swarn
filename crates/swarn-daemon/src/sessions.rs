@@ -83,7 +83,7 @@ pub enum Reply {
 
 pub enum Driver {
     Claude(Claude),
-    Codex(Codex),
+    Codex(Box<Codex>),
 }
 
 impl Driver {
@@ -97,7 +97,7 @@ impl Driver {
             "codex" => {
                 let mut codex = Codex::default();
                 codex.mode = mode;
-                Some(Self::Codex(codex))
+                Some(Self::Codex(Box::new(codex)))
             }
             _ => None,
         }
@@ -122,17 +122,17 @@ impl Driver {
             .or_else(|| env.which(program))
     }
 
-    fn args(&self, model: Option<&str>) -> Vec<String> {
+    fn args(&self, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
         match self {
-            Self::Claude(c) => c.args(model),
+            Self::Claude(c) => c.args(model, effort),
             Self::Codex(_) => vec!["app-server".into()],
         }
     }
 
-    fn start(&mut self, cwd: &str, model: Option<String>) -> Vec<String> {
+    fn start(&mut self, cwd: &str, model: Option<String>, effort: Option<String>) -> Vec<String> {
         match self {
             Self::Claude(_) => vec![],
-            Self::Codex(c) => c.start(cwd, model),
+            Self::Codex(c) => c.start(cwd, model, effort),
         }
     }
 
@@ -215,6 +215,7 @@ impl Sessions {
         worktree: String,
         prompt: String,
         model: Option<String>,
+        effort: Option<String>,
     ) -> Result<Session, String> {
         let agent = driver.agent();
         let binary = driver
@@ -223,7 +224,7 @@ impl Sessions {
         // Spawn before the row exists, so a binary that won't start leaves no session stuck in
         // "starting".
         let mut child = Command::new(binary)
-            .args(driver.args(model.as_deref()))
+            .args(driver.args(model.as_deref(), effort.as_deref()))
             .current_dir(&worktree)
             .env_clear()
             .envs(&self.env.vars)
@@ -269,7 +270,7 @@ impl Sessions {
             }
         });
 
-        for line in driver.start(&worktree, model) {
+        for line in driver.start(&worktree, model, effort) {
             let _ = stdin_tx.send(line);
         }
         let live = Live {
@@ -563,12 +564,20 @@ impl Sessions {
     }
 
     /// Sends a follow-up now, or holds it until the agent can take it.
-    pub async fn prompt(&self, session_id: &str, text: String) -> Result<&'static str, String> {
+    pub async fn prompt(
+        &self,
+        session_id: &str,
+        text: String,
+        effort: Option<String>,
+    ) -> Result<&'static str, String> {
         let delivery = {
             let mut live = self.live.lock().unwrap();
             let session = live
                 .get_mut(session_id)
                 .ok_or_else(|| format!("session {session_id} is not running"))?;
+            if let (Driver::Codex(codex), Some(effort)) = (&mut session.driver, effort) {
+                codex.effort = Some(effort);
+            }
             let held = !session.pending.is_empty()
                 || !session.driver.ready()
                 || !session.queued.is_empty();

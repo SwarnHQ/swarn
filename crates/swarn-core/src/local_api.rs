@@ -176,6 +176,10 @@ pub struct SessionStart {
     /// Passed to the agent as-is, e.g. `haiku`. The agent's own default when absent.
     #[serde(default)]
     pub model: Option<String>,
+    /// Reasoning effort, e.g. `high`, from the model's list in `agent.models`. The agent's own
+    /// default when absent.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 fn default_agent() -> String {
@@ -186,6 +190,9 @@ fn default_agent() -> String {
 pub struct SessionPrompt {
     pub session_id: String,
     pub text: String,
+    /// Codex applies it from this turn on. Claude reads effort only at start, so it ignores it.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

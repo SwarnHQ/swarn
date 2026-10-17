@@ -13,7 +13,6 @@ use crate::theme::{ButtonKind, Hue, MONO, Theme, button, label};
 
 pub struct Setup {
     pub check: Option<Value>,
-    pub policy: Option<Policy>,
 }
 
 impl Shell {
@@ -21,10 +20,7 @@ impl Shell {
         if self.setup.is_some() {
             return; // already open, with its recheck loop running
         }
-        self.setup = Some(Setup {
-            check: None,
-            policy: None,
-        });
+        self.setup = Some(Setup { check: None });
         self.recheck(cx);
         // ponytail: rechecks every 5 s while the screen is open, so a sign-in finished in Terminal
         // shows up without a button press. Each check runs a handful of CLIs, about a second.
@@ -59,27 +55,31 @@ impl Shell {
             },
             cx,
         );
+        self.load_policy(cx);
+    }
+
+    /// One copy of the policy for the setup page and the composer's Approve for me.
+    pub(crate) fn load_policy(&mut self, cx: &mut Context<Self>) {
         self.call::<Policy>(
             "policy.get",
             json!({}),
-            |this, result, _| {
-                if let (Some(setup), Ok(policy)) = (&mut this.setup, result) {
-                    setup.policy = Some(policy);
+            |this, result, cx| {
+                if let Ok(policy) = result {
+                    this.policy = Some(policy);
+                    cx.notify();
                 }
             },
             cx,
         );
     }
 
-    fn set_policy(&mut self, change: impl FnOnce(&mut Policy), cx: &mut Context<Self>) {
-        let Some(mut policy) = self.setup.as_ref().and_then(|s| s.policy.clone()) else {
+    pub(crate) fn set_policy(&mut self, change: impl FnOnce(&mut Policy), cx: &mut Context<Self>) {
+        let Some(policy) = &mut self.policy else {
             return;
         };
-        change(&mut policy);
-        if let Some(setup) = &mut self.setup {
-            setup.policy = Some(policy.clone());
-        }
-        self.call::<Policy>("policy.set", json!(policy), |_, _, _| {}, cx);
+        change(policy);
+        let params = json!(policy);
+        self.call::<Policy>("policy.set", params, |_, _, _| {}, cx);
         cx.notify();
     }
 
@@ -163,7 +163,7 @@ impl Shell {
             ));
         }
 
-        if let Some(policy) = &setup.policy {
+        if let Some(policy) = &self.policy {
             page = page.child(label(theme, "Approvals").mt(px(8.))).child(self.mode_toggle(theme, policy, cx)).child(
                 div()
                     .font_family(MONO)

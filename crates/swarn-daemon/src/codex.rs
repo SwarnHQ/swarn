@@ -19,6 +19,8 @@ pub struct Codex {
     next_id: u64,
     cwd: String,
     model: Option<String>,
+    /// Sent with every `turn/start`; changing it between turns needs no restart.
+    pub effort: Option<String>,
     version: Option<String>,
     thread_id: Option<String>,
     turn_id: Option<String>,
@@ -29,9 +31,15 @@ pub struct Codex {
 }
 
 impl Codex {
-    pub fn start(&mut self, cwd: &str, model: Option<String>) -> Vec<String> {
+    pub fn start(
+        &mut self,
+        cwd: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Vec<String> {
         self.cwd = cwd.to_owned();
         self.model = model;
+        self.effort = effort;
         self.next_id = THREAD_START + 1;
         let client =
             json!({ "name": "swarn", "title": "Swarn", "version": env!("CARGO_PKG_VERSION") });
@@ -45,10 +53,11 @@ impl Codex {
     pub fn prompt(&mut self, text: &str) -> String {
         self.in_turn = true;
         let input = [json!({ "type": "text", "text": text, "text_elements": [] })];
-        self.request(
-            "turn/start",
-            json!({ "threadId": self.thread_id, "input": input }),
-        )
+        let mut params = json!({ "threadId": self.thread_id, "input": input });
+        if let Some(effort) = &self.effort {
+            params["effort"] = json!(effort);
+        }
+        self.request("turn/start", params)
     }
 
     /// `decline` lets the agent carry on without the action; `cancel` also stops the turn, which is
@@ -308,7 +317,7 @@ impl Codex {
     }
 }
 
-/// The models `codex app-server` offers, its default first, as `{id, label}`. Passing the default
+/// The models `codex app-server` offers, its default first, as `{id, label, efforts}`. Passing the default
 /// explicitly sidesteps a `model` in the user's config.toml that their account can't use (seen in
 /// week 4). None if app-server can't be reached within 10 seconds.
 pub async fn list_models(env: &crate::env::AgentEnv) -> Option<Vec<Value>> {
@@ -348,7 +357,13 @@ pub async fn list_models(env: &crate::env::AgentEnv) -> Option<Vec<Value>> {
                     .as_array()?
                     .iter()
                     .filter(|m| m["hidden"] != true)
-                    .map(|m| json!({ "id": m["id"], "label": m["displayName"], "default": m["isDefault"] }))
+                    .map(|m| {
+                        let efforts: Vec<&Value> = m["supportedReasoningEfforts"]
+                            .as_array()
+                            .map(|e| e.iter().map(|e| &e["reasoningEffort"]).collect())
+                            .unwrap_or_default();
+                        json!({ "id": m["id"], "label": m["displayName"], "default": m["isDefault"], "efforts": efforts })
+                    })
                     .collect();
                 models.sort_by_key(|m| m["default"] != true);
                 return Some(models);
@@ -397,7 +412,11 @@ mod tests {
     #[test]
     fn recorded_transcript_maps_to_the_expected_actions() {
         let mut codex = Codex::default();
-        let first = codex.start("/work/repo", Some("gpt-5.6-luna".into()));
+        let first = codex.start(
+            "/work/repo",
+            Some("gpt-5.6-luna".into()),
+            Some("high".into()),
+        );
         assert!(first[0].contains("\"initialize\""));
         assert!(!codex.ready(), "no prompt before the thread exists");
 
@@ -409,7 +428,12 @@ mod tests {
             codex.ready(),
             "the turn completed, so the next prompt can go"
         );
-        assert!(codex.prompt("next").contains("turn/start"));
+        let next: Value = serde_json::from_str(&codex.prompt("next")).unwrap();
+        assert_eq!(next["method"], "turn/start");
+        assert_eq!(
+            next["params"]["effort"], "high",
+            "the effort rides on every turn"
+        );
         let kinds: Vec<String> = actions.iter().map(Action::describe).collect();
         assert_eq!(
             kinds,

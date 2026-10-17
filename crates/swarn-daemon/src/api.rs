@@ -200,7 +200,7 @@ impl Api {
             "session.prompt" => match params::<SessionPrompt>(p) {
                 Ok(p) => self
                     .sessions
-                    .prompt(&p.session_id, p.text)
+                    .prompt(&p.session_id, p.text, p.effort)
                     .await
                     .map(|delivery| json!({ "delivery": delivery }))
                     .map_err(Failed),
@@ -279,11 +279,12 @@ impl Api {
                     .clone()
                     .unwrap_or_else(|| vec![json!({ "id": null, "label": "Default" })])
             }
+            // `claude --help` lists the efforts; every model alias accepts the same set.
             _ => ["Default", "Opus", "Sonnet", "Haiku"]
                 .iter()
                 .map(|label| {
                     let id = (*label != "Default").then(|| label.to_lowercase());
-                    json!({ "id": id, "label": label })
+                    json!({ "id": id, "label": label, "efforts": ["low", "medium", "high", "xhigh", "max"] })
                 })
                 .collect(),
         }
@@ -315,7 +316,7 @@ impl Api {
             )));
         }
         self.sessions
-            .start(driver, ws.id, ws.worktree_path, p.prompt, p.model)
+            .start(driver, ws.id, ws.worktree_path, p.prompt, p.model, p.effort)
             .await
             .map(|s| json!(s))
             .map_err(Failed)

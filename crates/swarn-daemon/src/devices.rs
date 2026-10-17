@@ -299,7 +299,7 @@ impl Devices {
                         DeviceMessage::Prompt {
                             session_id, text, ..
                         } => {
-                            if let Err(e) = self.sessions.prompt(&session_id, text).await {
+                            if let Err(e) = self.sessions.prompt(&session_id, text, None).await {
                                 reply(error("prompt_failed", &e));
                             }
                         }
