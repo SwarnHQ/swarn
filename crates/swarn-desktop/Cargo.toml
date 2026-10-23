@@ -15,7 +15,7 @@ futures = "0.3"
 # Only for the bench feature: reads GPUI's frame histograms.
 hdrhistogram = { version = "7", optional = true }
 gpui.workspace = true
-gpui-component = "=0.7.3"
+gpui-component = "=0.8.0"
 gpui_platform.workspace = true
 objc2 = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSString", "NSError"] }
