@@ -15,7 +15,7 @@ base64 = "0.23"
 ciborium = "0.2"
 ed25519-dalek = "3"
 getrandom = "0.4"
-hpke = { version = "0.14", default-features = false, features = ["alloc", "x25519", "chacha", "getrandom"] }
+hpke = { version = "0.15", default-features = false, features = ["alloc", "x25519", "chacha", "getrandom"] }
 p256 = { version = "0.14", features = ["ecdsa"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_bytes = "0.11.19"
